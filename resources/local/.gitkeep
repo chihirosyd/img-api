@@ -1,0 +1,7 @@
+# 本地图片存放目录
+# 支持的格式：.jpg .jpeg .png .gif .webp .bmp .svg
+# 目录结构：
+#   pc/default/   ← PC 默认分类
+#   pe/default/   ← 手机默认分类
+# 
+# Git 仓库不包含图片文件，请自行放入

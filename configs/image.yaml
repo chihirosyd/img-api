@@ -1,0 +1,49 @@
+# ============================================================
+# 外部 API 图片池配置
+# 用于 external 数据源，可配置多个外部 API 端点
+#
+# 💡 如果 external_apis 列表为空（如下方全部注释掉），
+#    访问 source=external 时将返回"开始使用"引导页（HTTP 503），
+#    指导管理员在此文件中添加外部 API 端点。
+# ============================================================
+#
+# 每个 API 支持以下字段：
+#   name          — API 标识（用于日志和健康检查）
+#   url           — 请求模板，支持占位符 {width} {height} {category}
+#   response_type — redirect（跟随重定向）/ json（解析 JSON 响应）
+#   url_field     — JSON 响应中图片 URL 的字段路径（如 "urls.raw"）
+#   headers       — 自定义请求头（如 Authorization）
+#   categories       — 该 API 支持的分类列表，空或 ["all"] 表示匹配所有
+#   default_category — 默认分类（多值随机选一）；空=无分类，直接访问 URL
+#   category_param   — 分类对应的 query 参数名，如 "query"（可选）
+#
+# 使用示例：
+#   ?source=external                     → 随机选一个 API，用其默认分类
+#   ?source=external&api=flickr           → 指定 flickr，用其默认分类
+#   ?source=external&api=flickr&category=cat → 指定 flickr + 手动分类
+#
+# ============================================================
+
+external_apis:
+  # ── 示例 1：Lorem Picsum（单网址，无分类概念） ──
+  # - name: picsum
+  #   url: https://picsum.photos/{width}/{height}
+  #   response_type: redirect
+
+  # ── 示例 2：Lorem Flickr（URL 路径中带分类） ──
+  # - name: flickr
+  #   url: https://loremflickr.com/{width}/{height}/{category}
+  #   response_type: redirect
+  #   categories: [nature, anime, cat, dog, sports]
+  #   default_category: [nature, anime]     # 不指定分类时随机二选一
+
+  # ── 示例 3：Unsplash（JSON 响应 + query 参数传分类） ──
+  # - name: unsplash
+  #   url: https://api.unsplash.com/photos/random?w={width}&h={height}
+  #   response_type: json
+  #   url_field: urls.raw
+  #   category_param: query                 # → &query=nature
+  #   categories: [nature, anime, scenery, beauty]
+  #   default_category: scenery              # 单个默认分类
+  #   headers:
+  #     Authorization: "Client-ID YOUR_ACCESS_KEY"

@@ -1,0 +1,30 @@
+# Docker 构建上下文排除（防止敏感文件/本地数据进入镜像）
+.env
+config/
+storage/logs/*
+storage/index/*
+!storage/logs/.gitkeep
+!storage/index/.gitkeep
+resources/local/*
+!resources/local/.gitkeep
+!resources/local/pc/
+!resources/local/pe/
+resources/local/pc/*
+!resources/local/pc/default/
+resources/local/pe/*
+!resources/local/pe/default/
+resources/local/pc/default/*
+resources/local/pe/default/*
+!resources/local/pc/default/.gitkeep
+!resources/local/pe/default/.gitkeep
+.git/
+.github/
+.gitignore
+Dockerfile
+docker-compose.yml
+README.md
+docs/
+
+# CI 打包产物（不影响镜像内容）
+dist/
+pkg/

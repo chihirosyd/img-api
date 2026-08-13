@@ -1,0 +1,47 @@
+services:
+  img-api:
+    # 默认使用 GitHub 自动构建的镜像（推送 tag 后自动生成），用户无需本地编译
+    image: ghcr.io/chihirosyd/img-api:latest
+    # 如需从源码自行构建：注释掉上面的 image 行，取消下面的 build 段注释
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    # 注意：不设置固定 container_name，避免同机部署多实例时命名冲突
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/app/health-check", "-url", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    environment:
+      - APP_ROOT=/app
+    volumes:
+      # 配置目录（首次启动自动生成 .env，编辑后 restart 生效）
+      - ./config:/app/config
+      # 外部 API 池配置（image.yaml），挂载后无需重建镜像即可修改
+      - ./configs:/app/configs
+      # 持久化日志
+      - ./storage/logs:/app/storage/logs
+      # 本地图片索引（local.json，首启自动生成；不挂载则容器重建后重新生成）
+      - ./storage/index:/app/storage/index
+      # 挂载图库（方便在不重建镜像的情况下修改）
+      - ./resources/txt/pc:/app/resources/txt/pc:ro
+      - ./resources/txt/pe:/app/resources/txt/pe:ro
+      - ./resources/local:/app/resources/local:ro
+
+  # ── Redis（可选）──
+  # 如需启用：取消下面注释，并在 .env 中设置 REDIS_ADDR=redis:6379
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: img-api-redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+
+volumes:
+  redis_data:
