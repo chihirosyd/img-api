@@ -131,24 +131,25 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 		width, height = "400", "800"
 		widthI, heightI = 400, 800
 	}
-	url := strings.ReplaceAll(api.URL, "{width}", width)
-	url = strings.ReplaceAll(url, "{height}", height)
+	// 注意：局部变量命名避开 url，否则会遮蔽 net/url 包（url.PathEscape 等无法使用）
+	reqURL := strings.ReplaceAll(api.URL, "{width}", width)
+	reqURL = strings.ReplaceAll(reqURL, "{height}", height)
 	// 分类可能含中文/空格等字符，需按路径片段转义后替换占位符
-	url = strings.ReplaceAll(url, "{category}", url.PathEscape(effectiveCategory))
+	reqURL = strings.ReplaceAll(reqURL, "{category}", url.PathEscape(effectiveCategory))
 
 	// 如果配置了 category_param，追加 query 参数
 	if api.CategoryParam != "" && effectiveCategory != "" && effectiveCategory != "default" {
-		if strings.Contains(url, "?") {
-			url += "&"
+		if strings.Contains(reqURL, "?") {
+			reqURL += "&"
 		} else {
-			url += "?"
+			reqURL += "?"
 		}
-		url += api.CategoryParam + "=" + url.QueryEscape(effectiveCategory)
+		reqURL += api.CategoryParam + "=" + url.QueryEscape(effectiveCategory)
 	}
 
 	logger.L.Debug("external pool pick",
 		"api", api.Name,
-		"url", url,
+		"url", reqURL,
 		"device", deviceType,
 		"category", effectiveCategory,
 		"requested_category", category,
@@ -157,9 +158,9 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 	// 根据响应类型处理
 	switch api.ResponseType {
 	case "json":
-		return p.fetchJSON(ctx, *api, url, widthI, heightI)
+		return p.fetchJSON(ctx, *api, reqURL, widthI, heightI)
 	default:
-		return p.fetchRedirect(ctx, url, widthI, heightI)
+		return p.fetchRedirect(ctx, reqURL, widthI, heightI)
 	}
 }
 
@@ -232,7 +233,8 @@ func (p *ExternalPool) fetchRedirect(ctx context.Context, url string, width, hei
 
 // finalURL 发起请求并返回重定向后的最终 URL（不读取响应体）。
 func (p *ExternalPool) finalURL(ctx context.Context, method, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url)
+	// NewRequestWithContext 第 4 个参数为请求体（GET/HEAD 无 body，传 nil）
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("external %s request: %w", method, err)
 	}
@@ -254,7 +256,8 @@ func (p *ExternalPool) finalURL(ctx context.Context, method, url string) (string
 // 支持自定义请求头（如 Unsplash 的 Authorization）。
 // 响应体限制 10MB，防止 OOM。
 func (p *ExternalPool) fetchJSON(ctx context.Context, api ExternalAPIConfig, url string, width, height int) (*model.Image, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url)
+	// NewRequestWithContext 第 4 个参数为请求体（GET 无 body，传 nil）
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("external GET request: %w", err)
 	}
