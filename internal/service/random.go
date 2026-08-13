@@ -179,7 +179,7 @@ func (s *RandomService) Health(ctx context.Context) map[string]string {
 	} else if len(s.externalPool.APIs()) == 0 {
 		result["external_pool"] = "unconfigured (no APIs in image.yaml)"
 	} else {
-		result["external_pool"] = fmt.Sprintf("healthy (%d APIs)", s.externalPool.APIs())
+		result["external_pool"] = fmt.Sprintf("healthy (%d APIs)", len(s.externalPool.APIs()))
 	}
 
 	// 熔断器
