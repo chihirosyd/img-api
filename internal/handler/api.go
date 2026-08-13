@@ -6,11 +6,13 @@
 // 错误处理策略：
 //   - 图源未配置 → "开始使用"引导页（HTML / JSON / SVG 占位图，按客户端期望协商）
 //   - 分类不存在 → "分类不存在"提示页（404，可用分类列表仅在 Debug 模式展示）
+//   - 指定的 API 不存在 → "API 不存在"提示页（404，可用 API 列表仅在 Debug 模式展示）
 //   - 其它错误  → 普通 500（Debug 模式附带详细错误信息）
 package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -132,6 +134,18 @@ func (h *ApiHandler) Random(c *gin.Context) {
 		// 当前请求的图源未配置 → 综合"开始使用"引导页（介绍三种方式）
 		if h.svc.SourceEmpty(params.Source) {
 			h.renderSetupGuide(c, params.Mode)
+			return
+		}
+
+		// 指定的外部 API 名称不存在（配置错误）→ "API 不存在"提示页
+		var apiNotFound *model.ErrAPINotFound
+		if errors.As(err, &apiNotFound) {
+			// 仅 Debug 模式列出可用 API（避免向外部暴露配置清单）
+			var available []string
+			if config.C.Debug {
+				available = h.svc.AvailableAPIs()
+			}
+			h.renderAPINotFound(c, apiNotFound.Name, available, params.Mode)
 			return
 		}
 
@@ -384,6 +398,57 @@ func (h *ApiHandler) renderCategoryNotFound(c *gin.Context, category string, ava
 	}
 
 	page := strings.ReplaceAll(categoryNotFoundPage, "{{CATEGORY}}", html.EscapeString(category))
+	page = strings.ReplaceAll(page, "{{AVAILABLE}}", listHTML.String())
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
+	c.Status(http.StatusNotFound)
+	_, _ = c.Writer.WriteString(page)
+}
+
+// renderAPINotFound 返回"指定的外部 API 不存在"提示页。
+//
+// 触发条件：source=external 且 api 参数指定的名称在 image.yaml 池中不存在。
+// 属于配置错误而非上游故障，因此返回 404 提示而非 500。
+// available 仅在 Debug 模式由调用方传入（生产环境不暴露 API 清单）。
+func (h *ApiHandler) renderAPINotFound(c *gin.Context, apiName string, available []string, mode model.Mode) {
+	if mode == model.ModeJSON {
+		resp := gin.H{
+			"code":    404,
+			"message": "external api not found: " + apiName,
+		}
+		if len(available) > 0 {
+			resp["available"] = available
+		}
+		c.JSON(http.StatusNotFound, resp)
+		return
+	}
+
+	if mode == model.ModeImage || acceptsImage(c) {
+		lines := []string{fmt.Sprintf("你指定的 API %q 不存在", apiName)}
+		if len(available) > 0 {
+			lines = append(lines, "可用 API："+strings.Join(available, "、"))
+		} else {
+			lines = append(lines, "请检查 configs/image.yaml 中的 name 字段")
+		}
+		h.writePlaceholderSVG(c, "API 不存在", lines)
+		return
+	}
+
+	// 可用 API 列表：仅 Debug 模式传入，否则提示检查配置文件
+	var listHTML strings.Builder
+	if len(available) == 0 {
+		listHTML.WriteString("请检查 configs/image.yaml 中的 name 字段")
+	} else {
+		for i, name := range available {
+			if i > 0 {
+				listHTML.WriteString("、")
+			}
+			fmt.Fprintf(&listHTML, "<code>%s</code>", html.EscapeString(name))
+		}
+	}
+
+	page := strings.ReplaceAll(apiNotFoundPage, "{{API}}", html.EscapeString(apiName))
 	page = strings.ReplaceAll(page, "{{AVAILABLE}}", listHTML.String())
 
 	c.Header("Content-Type", "text/html; charset=utf-8")

@@ -102,7 +102,7 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 		// 指定 API 名称 → 精确查找
 		found, ok := p.FindByName(apiName)
 		if !ok {
-			return nil, &model.ErrNoImage{Source: "external", Category: apiName}
+			return nil, &model.ErrAPINotFound{Name: apiName}
 		}
 		api = found
 		// 校验分类：如果用户指定了 category 且 API 有白名单，检查是否匹配

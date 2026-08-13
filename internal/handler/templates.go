@@ -101,3 +101,39 @@ const categoryNotFoundPage = `<!DOCTYPE html>
 </div>
 </body>
 </html>`
+
+// apiNotFoundPage 是指定的外部 API 名称不存在时的提示页模板。
+// {{API}} 和 {{AVAILABLE}} 由 renderAPINotFound 动态替换。
+const apiNotFoundPage = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API 不存在 · img-api</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #f6f7f9; margin: 0; padding: 40px 16px; color: #333; }
+  .card { max-width: 680px; margin: 0 auto; background: #fff;
+          border: 1px solid #e4e7eb; border-radius: 12px; padding: 32px 36px;
+          box-shadow: 0 2px 8px rgba(0,0,0,.05); }
+  h1 { font-size: 22px; margin: 0 0 12px; }
+  .badge { display: inline-block; background: #fdeaea; color: #b91c1c;
+           border: 1px solid #f5c6c6; border-radius: 6px; padding: 2px 10px;
+           font-size: 13px; margin-left: 8px; vertical-align: middle; }
+  p { line-height: 1.8; font-size: 14px; }
+  code { background: #f1f3f5; border-radius: 4px; padding: 2px 6px;
+         font-family: Consolas, Monaco, monospace; font-size: 13px; color: #c7254e; }
+  .tip { background: #eef6ff; border-left: 4px solid #2f81f7; border-radius: 4px;
+         padding: 10px 14px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔍 API 不存在<span class="badge">404</span></h1>
+  <p>你指定的 API <code>{{API}}</code> 在外部 API 池中不存在。</p>
+  <p>当前可用的 API：{{AVAILABLE}}</p>
+  <div class="tip">💡 API 名称对应 <code>configs/image.yaml</code> 中 <code>external_apis</code> 各项的
+      <code>name</code> 字段，例如 <code>?source=external&amp;api=flickr</code>。</div>
+</div>
+</body>
+</html>`

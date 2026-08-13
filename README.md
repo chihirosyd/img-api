@@ -22,7 +22,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 - ⚡ **熔断保护** — 外部 API 异常三态熔断，保证服务稳定
 - 🛡️ **安全防护** — Token 鉴权 + IP 限流 + Referer 防盗链 + SSRF 防护 + 安全响应头
 - 🔑 **健康检查** — 公开/私有双模式，`/health-{secret}` 返回完整内部状态
-- 💡 **友好提示页** — 图源未配置/分类不存在时返回引导页（HTML / JSON / SVG 占位图）
+- 💡 **友好提示页** — 图源未配置 / 分类或 API 不存在时返回引导页（HTML / JSON / SVG 占位图）
 - 🗂️ **本地图片索引** — `local.json` 首启自动生成，支持定时自动刷新，无索引时自动扫目录兜底
 - 📦 **单文件部署** — 编译为独立二进制，无需任何运行时
 - 🐳 **Docker 支持** — Alpine 多阶段构建、非 root 运行，镜像精简
@@ -90,11 +90,15 @@ GET /random?type=auto&source=txt&mode=redirect&category=default
 | `source` | string | `txt` | `txt` / `local` / `external` |
 | `mode` | string | `redirect` | `redirect` / `json` / `image` |
 | `category` | string | `default` | 逗号分隔多选（如 `anime,scenery`） |
-| `api` | string | — | 外部 API 名称（`source=external` 时指定用哪个，不传则随机） |
+| `api` | string | — | 指定池中具体的外部 API（需配合 `source=external`；值为 `image.yaml` 中该项的 `name`，不传则随机选一个） |
 | `token` | string | — | 鉴权密钥（Auth 开启时必填） |
 
 > ⚠️ `source=local` 不支持 `mode=redirect`（返回 400）：本地图源返回的是文件系统路径，
 > 无法通过 302 让浏览器访问，请使用 `mode=image` 或 `mode=json`。
+
+> 💡 `source` 与 `api` 是两层选择：`source=external` 先进入"外部 API 池"渠道，
+> `api=flickr` 再指定渠道内具体哪个 API（值对应 `image.yaml` 中某项的 `name`）；
+> 不传 `api` 则从池中随机选一个。
 
 ### 使用示例
 
@@ -236,7 +240,7 @@ resources/local/
 
 ### 外部 API（source=external）
 
-编辑 `configs/image.yaml`，`?source=external` 调用。
+编辑 `configs/image.yaml` 配置 API 池，`?source=external` 调用；`?api=名称` 指定池中某个 API（不传则随机选一个）。
 
 > 💬 如果访问的图源还没有配置图片，API 会返回友好的"开始使用"引导页
 > （浏览器直接访问为 HTML 教程、博客 `<img>` 嵌入为 SVG 提示图、`mode=json` 为 JSON），

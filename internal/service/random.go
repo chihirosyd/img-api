@@ -124,12 +124,21 @@ func (s *RandomService) Random(ctx context.Context, source model.SourceType, api
 // 熔断器打开时直接返回 ErrCircuitOpen，不等待超时。
 // 外部 API 池未配置（nil 或空）时返回 ErrExternalNotConfigured，
 // 由 Handler 层返回"开始使用"引导页。
+// 指定的 API 名称不存在时返回 ErrAPINotFound，由 Handler 层返回 404 提示页。
 //
-// 注意：未配置属于部署问题而非上游故障，因此在调用熔断器前提前返回，
-// 避免配置缺失被误记为"失败"而错误触发熔断。
+// 注意：池未配置、API 名不存在均属配置问题而非上游故障，
+// 因此在调用熔断器前提前返回，避免被误记为"失败"而错误触发熔断。
 func (s *RandomService) randomFromExternal(ctx context.Context, apiName, category string, deviceType model.DeviceType) (*model.Image, error) {
 	if s.externalPool == nil || len(s.externalPool.APIs()) == 0 {
 		return nil, model.ErrExternalNotConfigured
+	}
+
+	// 指定的 API 名称不存在：属配置错误而非上游故障，
+	// 在进入熔断器前提前返回（避免被误记为失败而污染熔断计数）
+	if apiName != "" {
+		if _, ok := s.externalPool.FindByName(apiName); !ok {
+			return nil, &model.ErrAPINotFound{Name: apiName}
+		}
 	}
 
 	var img *model.Image
@@ -276,6 +285,20 @@ func (s *RandomService) AvailableCategories(source model.SourceType) []string {
 	default:
 		return nil
 	}
+}
+
+// AvailableAPIs 返回外部 API 池中已配置的 API 名称列表（用于"API 不存在"提示页）。
+// 池未配置时返回 nil。
+func (s *RandomService) AvailableAPIs() []string {
+	if s.externalPool == nil {
+		return nil
+	}
+	apis := s.externalPool.APIs()
+	names := make([]string, 0, len(apis))
+	for _, a := range apis {
+		names = append(names, a.Name)
+	}
+	return names
 }
 
 // checkSourcesEmpty 一次性检测三种图源的空置状态，结果缓存 30 秒。

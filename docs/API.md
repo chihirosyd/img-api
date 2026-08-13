@@ -78,6 +78,9 @@ GET /random?source=external
 
 > API 名称对应 `configs/image.yaml` 中 `name` 字段。未配置分类时自动使用 `default_category`（多个随机选），都没有则回退 `"default"`。
 
+> 📌 指定的 API 名称在池中不存在时返回 404 的"API 不存在"提示页（`mode=json` 为 JSON，
+> Debug 模式下附 `available` 可用列表），而不是 500。
+
 #### category — 分类
 
 - 单分类：`?category=anime`
@@ -183,6 +186,14 @@ Cache-Control: public, max-age=300
   "code": 404,
   "message": "category not found: anime",
   "available": ["default", "scenery"]
+}
+```
+
+```json
+{
+  "code": 404,
+  "message": "external api not found: flickr",
+  "available": ["picsum", "unsplash"]
 }
 ```
 
