@@ -179,6 +179,8 @@ func Load(rootPath string) error {
 //
 //	"a.com, b.com" → ["a.com", "b.com"]
 //	""              → nil
+//	" , , "         → nil（全部为空项时返回 nil，而非空切片：
+//	                   调用方以 nil 作为"未配置"的哨兵值）
 func parseWhitelist(raw string) []string {
 	if raw == "" {
 		return nil
@@ -190,6 +192,9 @@ func parseWhitelist(raw string) []string {
 		if p != "" {
 			result = append(result, p)
 		}
+	}
+	if len(result) == 0 {
+		return nil
 	}
 	return result
 }
