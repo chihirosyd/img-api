@@ -16,10 +16,13 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
 
       - name: Ensure module files are tidy
-        run: go mod tidy
+        # 与 gosum.yml 保持一致的升级策略：无本地 Go 环境下，由 CI 统一升级依赖并验证
+        run: |
+          go get -u ./...
+          go mod tidy
 
       - name: Run go vet
         run: go vet ./...
@@ -31,12 +34,10 @@ jobs:
         run: go test -race ./...
 
       - name: Run govulncheck
-        # 注意：固定安装 v1.1.4（要求 Go >= 1.22.0，与本项目一致）。
-        # 不直接用 golang/govulncheck-action@v1：它会安装最新版 govulncheck，
-        # 而最新版（v1.6.0+）要求 Go >= 1.25，与锁定的 Go 1.22 不兼容。
-        # 漏洞数据库在扫描时实时拉取，工具版本较旧不影响检测结果的时效性。
+        # Go 1.25 已满足最新版 govulncheck 的工具链要求；
+        # 漏洞数据库在扫描时实时拉取，保证检测结果时效性。
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
   # ── 构建 & 发布 ──
@@ -68,7 +69,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
 
       - name: Ensure module files are tidy
         run: go mod tidy

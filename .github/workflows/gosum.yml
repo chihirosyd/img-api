@@ -1,8 +1,11 @@
-# 自动生成并提交 go.sum（仓库当前未提交 go.sum，首次推送后由本工作流补齐）
+# 自动升级依赖并提交 go.mod / go.sum
 #
-# 说明：本地开发环境未安装 Go，无法手工生成 go.sum。
-# 本工作流在每次推送（go.mod 变更）时执行 go mod tidy 并提交 go.mod/go.sum，
-# 保证依赖校验和可复现构建。提交后的下一次 push 会再次触发 CI 全绿。
+# 说明：本地开发环境未安装 Go，无法手工维护 go.mod / go.sum。
+# 本工作流在每次推送（go.mod 变更）或手动触发时：
+#   1. go get -u ./... 将全部依赖升级到最新版本
+#   2. go mod tidy 重新整理依赖并生成 go.sum
+#   3. 自动提交 go.mod / go.sum
+# 保证依赖与 Go 工具链保持同步，并可复现构建。
 name: Update go.sum
 
 on:
@@ -23,10 +26,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
 
-      - name: Tidy modules (generates go.sum)
-        run: go mod tidy
+      - name: Upgrade deps & tidy (generates go.sum)
+        run: |
+          go get -u ./...
+          go mod tidy
 
       - name: Commit go.mod / go.sum
         uses: stefanzweifel/git-auto-commit-action@v5
