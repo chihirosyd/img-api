@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main, master]
 
+# 创建 Release 需要写权限：GitHub 新仓库默认工作流权限为只读，
+# 缺少本声明会导致 action-gh-release 上传时 403
+permissions:
+  contents: write
+
 jobs:
   # ── 静态检查 & 编译验证 ──
   check:
