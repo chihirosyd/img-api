@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +25,12 @@ func main() {
 
 	// 去除尾部斜杠，避免 base 为 "http://x/" 时拼出 "//health"
 	base := strings.TrimRight(*baseURL, "/")
+
+	// 校验 scheme，避免拼出非 HTTP 地址（如 ftp:// 或纯主机名）
+	if u, err := url.Parse(base); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		fmt.Fprintf(os.Stderr, "❌ invalid -url: must start with http:// or https:// (got %q)\n", base)
+		os.Exit(1)
+	}
 
 	// 有密钥 → /health-{secret}，否则 → /health
 	url := base + "/health"

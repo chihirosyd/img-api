@@ -43,7 +43,7 @@ func (s State) String() string {
 
 // Breaker 实现经典的三态熔断器，保护外部 API 调用。
 //
-// 所有字段通过 sync.RWMutex 保护，保证并发安全。
+// 所有字段通过 sync.RWMutex 保护，保障并发安全。
 type Breaker struct {
 	mu sync.RWMutex // 保护以下所有字段
 
@@ -75,7 +75,7 @@ func NewBreaker(failureThreshold, timeoutSeconds, halfOpenMax int) *Breaker {
 
 // Call 执行受熔断器保护的操作。
 // 如果熔断器打开，返回 ErrCircuitOpen 而不执行 fn。
-// 原子性地检查状态 + 记录半开尝试次数，消除 TOCTOU 竞态。
+// 原子性地检查状态 + 记录半开尝试次数，规避 TOCTOU 竞态。
 func (b *Breaker) Call(fn func() error) error {
 	b.mu.Lock()
 
@@ -83,7 +83,10 @@ func (b *Breaker) Call(fn func() error) error {
 	case StateClosed:
 		// 正常放行
 	case StateOpen:
-		if time.Since(b.lastFailAt) > b.timeout {
+		// timeout<=0 表示断路后立即进入半开探测（测试/特殊场景）；
+		// 否则等待超时。不依赖 time.Since>0 判断：高分辨率时钟下
+		// 连续两次 time.Now() 可能返回相同值。
+		if b.timeout <= 0 || time.Since(b.lastFailAt) > b.timeout {
 			b.state = StateHalfOpen
 			b.halfTries = 0
 		} else {

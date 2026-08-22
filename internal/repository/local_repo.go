@@ -58,8 +58,9 @@ func NewLocalRepository(rootPath, indexFile string) *LocalRepository {
 		}
 	}
 
-	// 可选：定时自动刷新索引
-	if min := config.C.LocalIndexRefreshMinutes; min > 0 {
+	// 可选：定时自动刷新索引（config.C 判空便于单元测试直接构造仓库）
+	if config.C != nil && config.C.LocalIndexRefreshMinutes > 0 {
+		min := config.C.LocalIndexRefreshMinutes
 		go r.refreshLoop(time.Duration(min) * time.Minute)
 		logger.L.Info("local index auto refresh enabled", "interval_minutes", min)
 	}
@@ -153,8 +154,7 @@ func (r *LocalRepository) loadIndex() error {
 
 // ScanLocalImages 扫描本地图片目录，返回分类索引（key "pc/default" → 绝对路径列表）。
 //
-// 供主服务的自动索引（refreshIndex）与 build-index 命令共用，
-// 保证手动重建与自动生成的结果完全一致。
+// 与 build-index 命令共用同一扫描函数，结果保持一致。
 // 目录不存在或不可读时返回空索引（不报错），保持最小可用。
 func ScanLocalImages(rootPath string) map[string][]string {
 	images := make(map[string][]string)
@@ -185,7 +185,7 @@ func ScanLocalImages(rootPath string) map[string][]string {
 }
 
 // refreshIndex 扫描整个 local 目录，更新内存索引并写回 local.json。
-// 目录不存在时生成空索引（不报错），保证首次启动也能正常创建文件。
+// 目录不存在时生成空索引（不报错），使首次启动也能正常创建文件。
 func (r *LocalRepository) refreshIndex() error {
 	images := ScanLocalImages(r.rootPath)
 

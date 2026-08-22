@@ -1,7 +1,7 @@
 package service
 
-// 本文件集中图库目录/分类的探测辅助函数，供提示页判定使用
-// （SourceEmpty / CategoryExists / AvailableCategories）。
+// 本文件集中图库目录/分类的探测辅助函数，供提示页判定与分类清单快照使用
+// （SourceEmpty / CategoryExists / CategoryExistsFor / AvailableCategories）。
 // 解析规则与 TxtRepository / LocalRepository 保持一致。
 
 import (
@@ -68,19 +68,8 @@ func localDirHasImages(root string) bool {
 	return false
 }
 
-// txtCategoryExists 检查 TXT 图库中某分类是否存在含有效 URL 的文件。
-// 检查 pc/pe 两个设备目录，任一存在即 true。
-func txtCategoryExists(root, category string) bool {
-	for _, dev := range []string{"pc", "pe"} {
-		if txtCategoryExistsForDevice(root, dev, category) {
-			return true
-		}
-	}
-	return false
-}
-
 // txtCategoryExistsForDevice 检查指定设备目录（pc/pe）下某分类的 TXT 文件
-// 是否含有效 URL。供 CategoryExistsFor 按设备精确判定使用。
+// 是否含有效 URL。供 CategoryExistsFor 与分类清单快照按设备精确判定使用。
 func txtCategoryExistsForDevice(root, device, category string) bool {
 	path := filepath.Join(root, device, category+".txt")
 	f, err := os.Open(path)
@@ -101,42 +90,28 @@ func txtCategoryExistsForDevice(root, device, category string) bool {
 	return hasURL
 }
 
-// txtCategories 列出 TXT 图库的所有分类名（去重，pc/pe 合并）。
-func txtCategories(root string) []string {
-	seen := make(map[string]bool)
+// txtCategoriesForDevice 列出指定设备目录下含有效 URL 的分类名（保持目录顺序）。
+// 内容校验与 txtCategoryExistsForDevice 一致：仅注释/空文件不算存在。
+func txtCategoriesForDevice(root, device string) []string {
+	entries, err := os.ReadDir(filepath.Join(root, device))
+	if err != nil {
+		return nil
+	}
 	var result []string
-	for _, dev := range []string{"pc", "pe"} {
-		entries, err := os.ReadDir(filepath.Join(root, dev))
-		if err != nil {
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".txt") {
 			continue
 		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".txt") {
-				continue
-			}
-			name := strings.TrimSuffix(e.Name(), ".txt")
-			if !seen[name] {
-				seen[name] = true
-				result = append(result, name)
-			}
+		name := strings.TrimSuffix(e.Name(), ".txt")
+		if txtCategoryExistsForDevice(root, device, name) {
+			result = append(result, name)
 		}
 	}
 	return result
 }
 
-// localCategoryExists 检查本地图片中某分类目录是否包含图片。
-// 检查 pc/pe 两个设备目录，任一存在即 true。
-func localCategoryExists(root, category string) bool {
-	for _, dev := range []string{"pc", "pe"} {
-		if localCategoryExistsForDevice(root, dev, category) {
-			return true
-		}
-	}
-	return false
-}
-
 // localCategoryExistsForDevice 检查指定设备目录（pc/pe）下某分类是否包含图片。
-// 供 CategoryExistsFor 按设备精确判定使用。
+// 供 CategoryExistsFor 与分类清单快照按设备精确判定使用。
 func localCategoryExistsForDevice(root, device, category string) bool {
 	dir := filepath.Join(root, device, category)
 	entries, err := os.ReadDir(dir)
@@ -151,20 +126,17 @@ func localCategoryExistsForDevice(root, device, category string) bool {
 	return false
 }
 
-// localCategories 列出本地图片的所有分类目录名（去重，pc/pe 合并）。
-func localCategories(root string) []string {
-	seen := make(map[string]bool)
+// localCategoriesForDevice 列出指定设备目录下含图片的分类目录名（保持目录顺序）。
+// 内容校验与 localCategoryExistsForDevice 一致：目录下直接含图片文件才算存在。
+func localCategoriesForDevice(root, device string) []string {
+	entries, err := os.ReadDir(filepath.Join(root, device))
+	if err != nil {
+		return nil
+	}
 	var result []string
-	for _, dev := range []string{"pc", "pe"} {
-		entries, err := os.ReadDir(filepath.Join(root, dev))
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() && !seen[e.Name()] {
-				seen[e.Name()] = true
-				result = append(result, e.Name())
-			}
+	for _, e := range entries {
+		if e.IsDir() && localCategoryExistsForDevice(root, device, e.Name()) {
+			result = append(result, e.Name())
 		}
 	}
 	return result

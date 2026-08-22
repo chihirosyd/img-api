@@ -90,9 +90,15 @@ GET /random?source=external
 
 > 💡 多分类行为：从请求的分类中筛选出**实际存在**的再随机选取，
 > 不会因某个分类不存在而报错；仅当全部分类都不存在时返回 404 提示页。
+> 分类清单有 30 秒快照缓存：新建的分类最迟 30 秒后才会被纳入多分类筛选
+> 与提示页可用列表；单分类直接取图不受影响，即时生效。
 
 > 📌 分类只在另一设备目录存在时（如仅 `pc/` 配置了该分类），当前设备类型的请求
 > 同样返回"分类不存在"提示页（404），而不是 500。
+
+> 📌 外部 API 渠道（`source=external`）下，请求的分类不在任何 API 的 `categories`
+> 白名单中时（指定 `api` 时检查该项的白名单），同样返回"分类不存在"提示页（404），
+> 且不计入熔断器失败次数。
 
 ### 通用响应头
 
@@ -224,6 +230,7 @@ GET /health
   "uptime": "2h 5m 30s",
   "checks": {
     "txt": "healthy",
+    "local": "healthy",
     "external_pool": "healthy (1 APIs)",
     "circuit_breaker": "CLOSED",
     "cache": "redis"
@@ -274,7 +281,7 @@ GET /health-mykey
 
 | status | 含义 |
 |--------|------|
-| `ok` | 所有**已初始化**的图源仓库健康（只有被请求过的图源才会出现在检查结果中） |
+| `ok` | 图源仓库健康。`local` / `txt` 仓库在启动时即初始化，`/health` 直接检查；`external` 渠道经 `external_pool` 信息性展示 |
 | `degraded` | 部分图源仓库不可用（服务仍可处理其他来源） |
 
 > `external_pool` / `circuit_breaker` / `cache` 为信息性状态，不参与健康判定。

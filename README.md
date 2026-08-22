@@ -6,7 +6,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 > Releases 中自动构建的二进制包与 Docker 镜像同样未经人工验证，
 > 正式投入使用前请务必先自行测试；如发现任何问题，欢迎提交 Issue。
 
-[![Go Version](https://img.shields.io/badge/Go-%3E%3D1.25-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-%3E%3D1.26-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker)](https://www.docker.com/)
 
@@ -14,12 +14,12 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 
 ## ✨ 特性
 
-- 🚀 **极致性能** — Go 原生编译，goroutine 高并发，内存占用低（参考值见 docs/DEPLOY.md）
-- 🎲 **每次请求真随机** — 不缓存选中结果，同一分类每次访问返回不同图片
+- 🚀 **高性能** — Go 原生编译，goroutine 高并发，内存占用低（参考值见 docs/DEPLOY.md）
+- 🎲 **每次请求真随机** — 不缓存选中结果，同一分类连续访问通常返回不同图片
 - 📱 **设备自适应** — 自动识别 PC/手机 User-Agent，返回对应横竖屏图片
 - 🔀 **三种图源** — TXT 图库、本地文件、外部 API 池，可按名称和分类筛选
 - 💾 **Redis 缓存** — SRandMember O(1) 随机 + 内存自动降级
-- ⚡ **熔断保护** — 外部 API 异常三态熔断，保证服务稳定
+- ⚡ **熔断保护** — 外部 API 异常三态熔断，保障服务稳定
 - 🛡️ **安全防护** — Token 鉴权 + IP 限流 + Referer 防盗链 + SSRF 防护 + 安全响应头
 - 🔑 **健康检查** — 公开/私有双模式，`/health-{secret}` 返回完整内部状态
 - 💡 **友好提示页** — 图源未配置 / 分类或 API 不存在时返回引导页（HTML / JSON / SVG 占位图）
@@ -33,7 +33,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 
 ## 🚀 快速开始
 
-### 本地运行（Go 1.25+）
+### 本地运行（Go 1.26+）
 
 ```bash
 git clone https://github.com/chihirosyd/img-api.git && cd img-api
@@ -41,6 +41,9 @@ cp .env.example .env
 go run ./cmd/server/
 curl http://localhost:8080/health
 ```
+
+> 💡 国内网络无法访问 proxy.golang.org 时，先执行
+> `go env -w GOPROXY=https://goproxy.cn,direct` 再构建。
 
 > 💡 本地没有 Go 环境？`docker compose build` 可在容器内完成编译验证
 > （仅开发者需要，终端用户直接使用镜像即可）。

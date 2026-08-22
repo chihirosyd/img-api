@@ -48,7 +48,7 @@ func Auth() gin.HandlerFunc {
 			token = c.Query("token")
 		}
 
-		// 常量时间比较，防止时序攻击
+		// 常量时间比较，降低时序攻击风险
 		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(config.C.AuthToken)) != 1 {
 			logger.L.Warn("auth failed", "ip", c.ClientIP())
 			c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "invalid or missing token"})

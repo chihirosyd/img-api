@@ -83,6 +83,10 @@
 
 > URL 占位符：`{width}` `{height}` 自动替换为设备对应尺寸，`{category}` 替换为实际分类。不需要的占位符直接不写即可。
 
+> 📌 请求的分类不受支持时（指定 `api` 时检查该项的 `categories` 白名单，
+> 随机模式检查池内任一 API 是否支持）返回 404"分类不存在"提示页，
+> 且不计入熔断器失败次数。
+
 > ⚠️ 如果 `external_apis` 列表为空（未配置任何端点），
 > 访问 `source=external` 会返回 HTTP 503 的"开始使用"引导页（`mode=json` 时返回 JSON，
 > 博客 `<img>` 嵌入时返回 SVG 提示图），指导管理员在 `configs/image.yaml` 中添加端点。
@@ -147,6 +151,7 @@ HALF_OPEN ──任一失败──→ OPEN
 | TXT 增删 URL（已同步 Redis） | 需重新运行 sync-redis（源码 `go run ./cmd/sync-redis/`，二进制 `./sync-redis`） |
 | local 新增分类（新目录） | 即时 |
 | local 已有分类中增删图片 | 重启服务 / `./build-index`（源码 `go run ./cmd/build-index/`）/ 定时刷新后生效；重建前删除图片可能随机返回 502 |
+| 分类清单（提示页可用列表 / 多分类筛选） | 30 秒快照缓存：新建分类最迟 30 秒纳入清单；单分类直接取图不受影响、即时生效 |
 | `configs/image.yaml`（外部 API） | 重启服务 |
 | `.env` 配置 | 重启服务 |
 

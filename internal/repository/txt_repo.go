@@ -114,7 +114,7 @@ func (r *TxtRepository) Health(ctx context.Context) error {
 // ReadTxtLines 读取 TXT 文件并过滤空行与 # 注释行，返回有效行列表。
 //
 // 供 TxtRepository（带 mtime 缓存）与 sync-redis 命令共用，
-// 保证两处对 TXT 文件的解析规则完全一致。
+// 使两处对 TXT 文件的解析规则保持一致。
 func ReadTxtLines(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -1,6 +1,7 @@
 # 环境配置（含敏感信息）
 .env
-config/                   # Docker 挂载的运行时配置目录
+# Docker 挂载的运行时配置目录
+config/
 
 # ── 编译产物 ──
 /img-api
@@ -14,8 +15,17 @@ config/                   # Docker 挂载的运行时配置目录
 /sync-redis
 /sync-redis.exe
 /build/
-/dist/          # release workflow 本地复跑产物
+# release workflow 本地复跑产物
+/dist/
 /pkg/
+
+# ── Go 开发工具产物 ──
+# go test -coverprofile 等覆盖率输出
+*.out
+# go test -c 生成的测试二进制
+*.test
+# pprof 性能采样
+*.prof
 
 # ── 日志 & 运行时文件 ──
 storage/logs/*

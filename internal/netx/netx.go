@@ -2,7 +2,7 @@
 //
 // 核心能力：
 //   - 拨号前校验解析出的 IP（防 DNS rebinding 绕过 SSRF 检查）
-//   - 拨号时直连已验证的 IP（消除"检查后再解析"的 TOCTOU 窗口）
+//   - 拨号时直连已验证的 IP（规避"检查后再解析"的 TOCTOU 窗口）
 //   - 合理的连接池参数，避免高并发下连接耗尽
 //
 // 用于 mode=image 代理和外部 API 池两个出站场景。
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -42,7 +43,7 @@ func IsBlockedIP(ip net.IP) bool {
 // 工作流程：
 //  1. 解析主机名 → 得到全部 IP
 //  2. 任一 IP 为内网地址 → 拒绝拨号
-//  3. 逐个尝试直连合法 IP（而非重新解析域名，杜绝 DNS rebinding）
+//  3. 逐个尝试直连合法 IP（而非重新解析域名，防范 DNS rebinding）
 //
 // 注意：http.Transport 的 TLS ServerName 仍取请求 URL 的原始主机名，
 // 因此直连 IP 不影响 HTTPS 证书校验与 SNI。
@@ -90,6 +91,11 @@ func NewClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
+			// 显式禁用环境代理（HTTP_PROXY/HTTPS_PROXY）：
+			// 通过代理出站时 SafeDialContext 校验的是代理 IP 而非目标 IP，
+			// 内网目标会绕过 SSRF 拦截。注意 Transport.Proxy 字段为 nil
+			// 时 Go 默认走 ProxyFromEnvironment，必须用空函数覆盖。
+			Proxy:               func(*http.Request) (*url.URL, error) { return nil, nil },
 			DialContext:         SafeDialContext,
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 20,

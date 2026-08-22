@@ -173,14 +173,12 @@ func (m *MemoryCache) SAdd(ctx context.Context, key string, members ...string) e
 func (m *MemoryCache) SRandMember(ctx context.Context, key string) (string, error) {
 	m.setMu.RLock()
 	s, ok := m.sets[key]
-	m.setMu.RUnlock()
-
 	if !ok || len(s) == 0 {
+		m.setMu.RUnlock()
 		return "", Nil
 	}
 
 	// 收集所有成员后随机选（O(n)，但 Set 通常很小）
-	m.setMu.RLock()
 	members := make([]string, 0, len(s))
 	for member := range s {
 		members = append(members, member)

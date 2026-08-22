@@ -22,7 +22,7 @@ import (
 // 允许任意 Origin 的 GET 请求（图片 API 通常需要被各种网站引用）。
 // OPTIONS 预检请求直接返回 204，不进入后续中间件链。
 //
-// 当 CORS_ENABLED=false 时完全跳过跨域头（如前方已有 Nginx 处理 CORS），
+// 当 CORS_ENABLED=false 时直接跳过跨域头（如前方已有 Nginx 处理 CORS），
 // 但安全响应头仍会添加。
 //
 // 安全提示：Token 鉴权（AUTH_ENABLED=true）开启时，

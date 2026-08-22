@@ -1,5 +1,5 @@
 # ── 构建阶段 ──
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
@@ -8,14 +8,17 @@ RUN apk add --no-cache git
 
 # 复制全部源码（含 go.mod），一次性编译所有入口
 COPY . .
-RUN go mod tidy && \
+# 与 release.yml 的 check 任务保持一致：先升级全部依赖再 tidy，
+# 保证镜像内的依赖版本与 Release 二进制一致
+RUN go get -u ./... && go mod tidy && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o img-api ./cmd/server/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o build-index ./cmd/build-index/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o sync-redis ./cmd/sync-redis/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o health-check ./cmd/health-check/
 
 # ── 运行阶段（最小镜像） ──
-FROM alpine:3.19
+# alpine 3.22：3.19 已于 2025-11 停止维护
+FROM alpine:3.22
 
 # ca-certificates: HTTPS 请求所需；tzdata: 时区；su-exec: root→非root 降权
 RUN apk add --no-cache ca-certificates tzdata su-exec && \

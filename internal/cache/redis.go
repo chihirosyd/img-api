@@ -20,8 +20,8 @@ type RedisCache struct {
 
 // NewRedisCache 创建 Redis 缓存实例并验证连接。
 //
-// 启动时执行一次 PING 确保连通性。
-// 连接失败应回退到 NewMemoryCache()，保证服务正常启动。
+// 启动时执行一次 PING 检查连通性。
+// 连接失败应回退到 NewMemoryCache()，保障服务正常启动。
 func NewRedisCache(addr, password string, db int) (*RedisCache, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:         addr,

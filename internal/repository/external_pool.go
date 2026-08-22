@@ -105,15 +105,18 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 			return nil, &model.ErrAPINotFound{Name: apiName}
 		}
 		api = found
-		// 校验分类：如果用户指定了 category 且 API 有白名单，检查是否匹配
+		// 校验分类：如果用户指定了 category 且 API 有白名单，检查是否匹配。
+		// 不匹配属请求/配置问题而非上游故障，返回哨兵错误供 Handler 渲染 404 提示页
+		// （正常情况下 Service 层已在进入熔断器前预检，这里是防御性兜底）。
 		if category != "" && category != "default" && len(api.Categories) > 0 && !p.apiMatchesCategory(*api, category) {
-			return nil, fmt.Errorf("external api %s does not support category %s", api.Name, category)
+			return nil, &model.ErrCategoryNotSupported{Source: "external", Category: category}
 		}
 	} else {
-		// 未指定 → 按分类筛选后随机选
+		// 未指定 → 按分类筛选后随机选。无候选属分类不受支持，
+		// 返回哨兵错误供 Handler 渲染 404 提示页（而非笼统的 500）。
 		candidates := p.filterByCategory(category)
 		if len(candidates) == 0 {
-			return nil, &model.ErrNoImage{Source: "external", Category: category}
+			return nil, &model.ErrCategoryNotSupported{Source: "external", Category: category}
 		}
 		api = &candidates[rand.Intn(len(candidates))]
 	}
@@ -209,6 +212,35 @@ func (p *ExternalPool) apiMatchesCategory(api ExternalAPIConfig, category string
 		}
 	}
 	return false
+}
+
+// SupportsCategory 判断池中是否至少存在一个 API 支持指定分类。
+// category 为空或 "default" 时不筛选（固定返回 true，与 filterByCategory 规则一致）。
+// 供 Service 层在进入熔断器前预检，避免分类不匹配被误记为上游失败。
+func (p *ExternalPool) SupportsCategory(category string) bool {
+	if category == "" || category == "default" {
+		return true
+	}
+	for _, api := range p.apis {
+		if p.apiMatchesCategory(api, category) {
+			return true
+		}
+	}
+	return false
+}
+
+// APISupportsCategory 判断指定名称的 API 是否支持该分类。
+// category 为空或 "default" 时不筛选（固定返回 true）。
+// API 不存在时返回 false（调用方应先经 FindByName 确认存在）。
+func (p *ExternalPool) APISupportsCategory(name, category string) bool {
+	if category == "" || category == "default" {
+		return true
+	}
+	api, ok := p.FindByName(name)
+	if !ok {
+		return false
+	}
+	return p.apiMatchesCategory(*api, category)
 }
 
 // fetchRedirect 获取重定向后的最终图片 URL。

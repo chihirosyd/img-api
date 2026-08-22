@@ -1,8 +1,7 @@
 // build-index — 手动重建本地图片 JSON 索引。
 //
 // 扫描 resources/local/ 目录，将所有图片文件路径写入 storage/index/local.json。
-// 扫描逻辑与主服务的自动索引共用（repository.ScanLocalImages），
-// 保证手动重建与自动生成的结果完全一致。
+// 与主服务自动索引共用同一扫描函数（repository.ScanLocalImages），结果保持一致。
 //
 // ⚠️ 通常无需手动运行：主服务启动时会自动生成/加载索引（见 LocalRepository），
 // 并可配置 LOCAL_INDEX_REFRESH_MINUTES 定时刷新。此命令用于：

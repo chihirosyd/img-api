@@ -82,8 +82,10 @@ func main() {
 	// ── 第 7 步：初始化服务 ──
 	svc := service.NewRandomService(rootPath, c, externalPool, stats)
 
-	// 预热 local 仓库：启动时即生成/加载本地图片索引（local.json 不存在则首次生成）
+	// 预热 local/txt 仓库：启动时即生成/加载本地图片索引（local.json 不存在则首次生成），
+	// 同时让 /health 从启动起就覆盖 txt 目录的健康状态（txt 仓库初始化很轻量）。
 	_ = svc.GetRepo(model.SourceLocal)
+	_ = svc.GetRepo(model.SourceTxt)
 
 	// ── 第 8 步：设置 Gin ──
 	if !config.C.Debug {
@@ -92,7 +94,7 @@ func main() {
 	r := gin.New()
 
 	// Gin 默认信任所有反代来源的 X-Forwarded-For（日志 IP 可被伪造）。
-	// 与限流器策略一致：仅信任 TRUSTED_PROXIES 配置的网段；未配置则完全不信任转发头。
+	// 与限流器策略一致：仅信任 TRUSTED_PROXIES 配置的网段；未配置则不信任任何转发头。
 	if err := r.SetTrustedProxies(config.C.TrustedProxies); err != nil {
 		logger.L.Warn("invalid TRUSTED_PROXIES entries ignored", "error", err)
 	}
@@ -106,7 +108,7 @@ func main() {
 	r.Use(middleware.Referer())
 
 	// ── 第 10 步：注册路由 ──
-	apiH := handler.NewApiHandler(svc, stats)
+	apiH := handler.NewApiHandler(rootPath, svc, stats)
 	healthH := handler.NewHealthHandler(svc, stats)
 
 	// 健康检查接口不经过 Token 鉴权：Docker healthcheck、负载均衡探针等
@@ -121,9 +123,10 @@ func main() {
 
 	// ── 第 11 步：优雅启停 ──
 	srv := &http.Server{
-		Addr:         config.C.ListenAddr(),
-		Handler:      r,
-		ReadTimeout:  10 * time.Second,
+		Addr:              config.C.ListenAddr(),
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second, // Slowloris 防护：仅限制请求头读取时限
+		ReadTimeout:       10 * time.Second,
 		// mode=image 代理上限 50MB，慢客户端 30s 写不完会被强制断连，放宽到 120s
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,

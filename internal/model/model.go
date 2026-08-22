@@ -19,6 +19,19 @@ var ImageExts = map[string]bool{
 	".gif": true, ".webp": true, ".bmp": true, ".svg": true,
 }
 
+// ImageMimeTypes 是图片扩展名 → 标准 MIME 类型的映射，与 ImageExts 一一对应。
+// 供 serveLocalFile 输出 Content-Type 使用；集中定义避免与 ImageExts 两处清单不一致。
+// 注意 .jpg 的标准 MIME 是 image/jpeg（"image/jpg" 并非规范值，部分严格客户端会拒绝）。
+var ImageMimeTypes = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+	".svg":  "image/svg+xml",
+}
+
 // ──────────────────────────────────────────────
 // 设备类型（type 参数）
 // ──────────────────────────────────────────────

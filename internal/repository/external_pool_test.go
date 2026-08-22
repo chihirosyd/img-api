@@ -46,3 +46,66 @@ func TestAPIMatchesCategory(t *testing.T) {
 		}
 	}
 }
+
+func TestSupportsCategory(t *testing.T) {
+	pool := &ExternalPool{apis: []ExternalAPIConfig{
+		{Name: "a", Categories: []string{"cat"}},
+		{Name: "b", Categories: []string{"all"}},
+		{Name: "c"}, // 未声明 categories → 匹配所有
+	}}
+
+	cases := []struct {
+		category string
+		want     bool
+	}{
+		{"", true},        // 空 → 不筛选
+		{"default", true}, // default → 不筛选
+		{"cat", true},     // a 精确匹配
+		{"dog", true},     // b 的 all 通配 / c 未声明
+		{"bird", true},    // b 的 all 通配匹配所有分类
+	}
+
+	for _, c := range cases {
+		if got := pool.SupportsCategory(c.category); got != c.want {
+			t.Errorf("SupportsCategory(%q) = %v, want %v", c.category, got, c.want)
+		}
+	}
+
+	// 无通配/未声明 categories 的池：白名单外的分类返回 false
+	strict := &ExternalPool{apis: []ExternalAPIConfig{
+		{Name: "a", Categories: []string{"cat"}},
+	}}
+	if !strict.SupportsCategory("cat") {
+		t.Error("strict pool should support cat")
+	}
+	if strict.SupportsCategory("bird") {
+		t.Error("strict pool should not support bird")
+	}
+}
+
+func TestAPISupportsCategory(t *testing.T) {
+	pool := &ExternalPool{apis: []ExternalAPIConfig{
+		{Name: "flickr", Categories: []string{"nature", "cat"}},
+		{Name: "picsum"}, // 未声明 categories → 匹配所有
+	}}
+
+	cases := []struct {
+		name     string
+		category string
+		want     bool
+	}{
+		{"flickr", "cat", true},
+		{"flickr", "nature", true},
+		{"flickr", "dog", false},
+		{"flickr", "default", true}, // default → 不筛选
+		{"flickr", "", true},
+		{"picsum", "anything", true}, // 未声明 → 匹配所有
+		{"missing", "cat", false},    // API 不存在
+	}
+
+	for _, c := range cases {
+		if got := pool.APISupportsCategory(c.name, c.category); got != c.want {
+			t.Errorf("APISupportsCategory(%q, %q) = %v, want %v", c.name, c.category, got, c.want)
+		}
+	}
+}

@@ -25,6 +25,21 @@ docker-compose.yml
 README.md
 docs/
 
+# 本地编译产物与 Go 开发工具输出（避免进入构建上下文）
+/img-api
+/img-api.exe
+/server
+/server.exe
+/health-check
+/health-check.exe
+/build-index
+/build-index.exe
+/sync-redis
+/sync-redis.exe
+*.out
+*.test
+*.prof
+
 # CI 打包产物（不影响镜像内容）
 dist/
 pkg/

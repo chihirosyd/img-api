@@ -73,7 +73,7 @@ type AppConfig struct {
 // configs/image.yaml 单独供外部 API 池模块（ExternalPool）读取，
 // 不在环境变量/默认值体系内。
 //
-// 任意配置文件缺失都不报错，确保最小可用；
+// 任意配置文件缺失都不报错，以保持最小可用；
 // 文件存在但解析失败时向 stderr 输出警告（此时日志系统尚未初始化）。
 func Load(rootPath string) error {
 	v = viper.New()
@@ -200,7 +200,7 @@ func parseWhitelist(raw string) []string {
 }
 
 // setDefaults 注册所有配置项的默认值。
-// 在 .env 和环境变量之后调用，确保只对未设置的项生效。
+// 在 .env 和环境变量之后调用，使其只对未设置的项生效。
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("app_debug", false) // 默认关闭调试，避免公网部署暴露分类清单/详细错误
 	v.SetDefault("app_name", "img-api")

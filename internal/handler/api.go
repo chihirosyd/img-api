@@ -11,7 +11,6 @@
 package handler
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"html"
@@ -38,29 +37,18 @@ import (
 // 安全：拨号前校验 IP（防 DNS rebinding）+ 10s 超时 + 连接池复用。
 var proxyClient = netx.NewClient(10 * time.Second)
 
-// imageMimeTypes 是本地图片扩展名 → 标准 MIME 类型的映射。
-// 注意 .jpg 的标准 MIME 是 image/jpeg（"image/jpg" 并非规范值，
-// 部分严格客户端会拒绝）。
-var imageMimeTypes = map[string]string{
-	".jpg":  "image/jpeg",
-	".jpeg": "image/jpeg",
-	".png":  "image/png",
-	".gif":  "image/gif",
-	".webp": "image/webp",
-	".bmp":  "image/bmp",
-	".svg":  "image/svg+xml",
-}
-
 // ApiHandler 处理图片相关的 HTTP 请求。
 // 持有 Service 引用以获取随机图片，持有 Stats 引用以记录调用统计。
 type ApiHandler struct {
-	svc   *service.RandomService // 随机图片服务
-	stats *service.Stats         // 请求统计（共享实例）
+	rootPath string                 // 项目根目录（本地文件输出越界校验的锚点）
+	svc      *service.RandomService // 随机图片服务
+	stats    *service.Stats         // 请求统计（共享实例）
 }
 
-// NewApiHandler 创建 API 处理器。
-func NewApiHandler(svc *service.RandomService, stats *service.Stats) *ApiHandler {
-	return &ApiHandler{svc: svc, stats: stats}
+// NewApiHandler 创建 API 处理器。rootPath 是项目根目录，
+// 用于校验 source=local 返回的文件路径确实位于项目内（防越界）。
+func NewApiHandler(rootPath string, svc *service.RandomService, stats *service.Stats) *ApiHandler {
+	return &ApiHandler{rootPath: filepath.Clean(rootPath), svc: svc, stats: stats}
 }
 
 // Random 处理 GET /random — 获取一张随机图片。
@@ -152,7 +140,10 @@ func (h *ApiHandler) Random(c *gin.Context) {
 		// 图源有内容，但请求的分类不存在 → "分类不存在"提示页。
 		// 分类在另一设备目录存在、当前设备目录缺失（如 pc 有、pe 没有）时，
 		// 对该设备同样返回"分类不存在"提示，而不是笼统的 500。
-		if !h.svc.CategoryExists(params.Source, params.Category) ||
+		// 外部 API 渠道：分类不在白名单中（ErrCategoryNotSupported）同样返回此提示页。
+		var categoryNotSupported *model.ErrCategoryNotSupported
+		if errors.As(err, &categoryNotSupported) ||
+			!h.svc.CategoryExists(params.Source, params.Category) ||
 			!h.svc.CategoryExistsFor(params.Source, params.Category, deviceType) {
 			// 仅 Debug 模式列出可用分类（避免向外部暴露图库分类清单）
 			var available []string
@@ -208,7 +199,7 @@ func (h *ApiHandler) Random(c *gin.Context) {
 // proxyImage 代理输出远程图片（mode=image）。
 //
 // 安全：仅允许 http/https、阻止内网 IP、校验 Content-Type、50MB 上限，
-// SVG 响应附加 CSP sandbox，防止脚本在 API 域名下执行。
+// SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
 func (h *ApiHandler) proxyImage(c *gin.Context, imageURL string) {
 	// SSRF 防护：只允许 http/https
 	parsed, err := url.Parse(imageURL)
@@ -217,8 +208,10 @@ func (h *ApiHandler) proxyImage(c *gin.Context, imageURL string) {
 		return
 	}
 
-	// SSRF 防护：阻止访问内网地址
-	if isPrivateHost(c.Request.Context(), parsed.Hostname()) {
+	// SSRF 防护：IP 字面量直接拒绝。域名解析与内网拦截由 netx 拨号层统一完成
+	// （SafeDialContext 会校验每个重定向跳转的目标 IP，比预检覆盖更全面），
+	// 避免同一次代理请求重复解析 DNS。
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && netx.IsBlockedIP(ip) {
 		logger.L.Warn("ssrf blocked: private IP", "url", imageURL)
 		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "invalid image URL"})
 		return
@@ -237,7 +230,7 @@ func (h *ApiHandler) proxyImage(c *gin.Context, imageURL string) {
 	}
 	defer resp.Body.Close()
 
-	// 仅允许图片类型，防止 XSS（如 text/html）
+	// 仅允许图片类型，降低 XSS 风险（如 text/html）
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
 		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "upstream returned non-image content"})
@@ -252,21 +245,39 @@ func (h *ApiHandler) proxyImage(c *gin.Context, imageURL string) {
 
 	c.Header("Content-Type", contentType)
 	c.Header("Cache-Control", "public, max-age=300")
-	// SVG 可内嵌脚本：沙箱化，防止直接访问时脚本在 API 域名下执行（XSS）
+	// SVG 可内嵌脚本：沙箱化，降低直接访问时脚本在 API 域名下执行的风险（XSS）
 	if strings.HasPrefix(contentType, "image/svg+xml") {
 		c.Header("Content-Security-Policy", "sandbox")
 	}
 
 	c.Status(http.StatusOK)
-	// 限制最大 50MB，防 OOM
-	_, _ = io.CopyN(c.Writer, resp.Body, 50<<20)
+	// 限制最大 50MB，防 OOM。多读 1 字节探测超限：上游图超过 50MB 时直接断开连接，
+	// 避免客户端把截断的半张图误当作完整图片（Content-Length 声明超限已在前面拒绝）。
+	written, _ := io.CopyN(c.Writer, resp.Body, 50<<20+1)
+	if written > 50<<20 {
+		logger.L.Warn("upstream image exceeded 50MB limit, closing connection", "url", imageURL)
+		if hj, ok := c.Writer.(http.Hijacker); ok {
+			if conn, _, hijackErr := hj.Hijack(); hijackErr == nil {
+				conn.Close()
+			}
+		}
+		return
+	}
 }
 
 // serveLocalFile 直接输出本地文件（source=local + mode=image）。
 // 安全：防路径穿越、拒绝符号链接、仅允许图片扩展名、50MB 上限，
-// SVG 响应附加 CSP sandbox，防止脚本在 API 域名下执行。
+// SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
 func (h *ApiHandler) serveLocalFile(c *gin.Context, filePath string) {
 	cleanPath := filepath.Clean(filePath)
+
+	// 安全检查 0：文件必须位于项目根目录内（防绝对路径越界）
+	if rel, relErr := filepath.Rel(h.rootPath, cleanPath); relErr != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		logger.L.Warn("local file outside project root blocked", "path", filePath)
+		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "access denied"})
+		return
+	}
 
 	// 安全检查 1：防路径穿越。按路径分隔符切分后逐段检查，
 	// 避免子串匹配误伤合法文件名（如 "photo..jpg"）。
@@ -285,11 +296,20 @@ func (h *ApiHandler) serveLocalFile(c *gin.Context, filePath string) {
 		return
 	}
 
-	// 安全检查 3：拒绝符号链接（防止链接指向图库目录外的文件）
-	if fi, err := os.Lstat(cleanPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		logger.L.Warn("symlink blocked", "path", cleanPath)
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "access denied"})
-		return
+	// 安全检查 3：拒绝符号链接（防止链接指向图库目录外的文件）。
+	// 从文件本身逐级向上校验到项目根目录：任何一级父目录是符号链接都可能越界。
+	for dir := cleanPath; ; dir = filepath.Dir(dir) {
+		if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			logger.L.Warn("symlink blocked", "path", dir)
+			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "access denied"})
+			return
+		}
+		if dir == h.rootPath {
+			break
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			break // 已到卷根（越界路径已被安全检查 0 拦截）
+		}
 	}
 
 	f, err := os.Open(cleanPath)
@@ -307,14 +327,14 @@ func (h *ApiHandler) serveLocalFile(c *gin.Context, filePath string) {
 	}
 
 	// 根据扩展名推断标准 Content-Type（如 .jpg → image/jpeg）
-	contentType := imageMimeTypes[ext]
+	contentType := model.ImageMimeTypes[ext]
 	if contentType == "" {
 		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "unsupported local file type"})
 		return
 	}
 	c.Header("Content-Type", contentType)
 	c.Header("Cache-Control", "public, max-age=300")
-	// SVG 可内嵌脚本：沙箱化，防止直接访问时脚本在 API 域名下执行（XSS）
+	// SVG 可内嵌脚本：沙箱化，降低直接访问时脚本在 API 域名下执行的风险（XSS）
 	if ext == ".svg" {
 		c.Header("Content-Security-Policy", "sandbox")
 	}
@@ -522,26 +542,4 @@ func parseParams(c *gin.Context) model.RandomParams {
 	}
 
 	return params
-}
-
-// isPrivateHost 检查主机名是否解析为禁止访问的地址（防 SSRF）。
-// 任一解析结果为内网/保留地址即拒绝（与 netx.SafeDialContext 规则一致）。
-// DNS 解析带 ctx 超时，避免异常 DNS 卡住 handler goroutine。
-func isPrivateHost(ctx context.Context, host string) bool {
-	// 先尝试直接解析 IP（如 127.0.0.1、10.0.0.1、[::1]）
-	if ip := net.ParseIP(host); ip != nil {
-		return netx.IsBlockedIP(ip)
-	}
-
-	// 不是 IP 字面量，尝试 DNS 解析（所有结果都必须合法）
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil || len(ips) == 0 {
-		return true // 解析失败，保守拒绝
-	}
-	for _, ip := range ips {
-		if netx.IsBlockedIP(ip.IP) {
-			return true
-		}
-	}
-	return false
 }

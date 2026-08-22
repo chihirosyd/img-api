@@ -3,8 +3,8 @@
 // 请求流程：Handler → 仓库随机选取 → 返回。
 // external 来源经熔断器保护，txt/local 直接读取。
 //
-// 设计：每次请求独立随机，不缓存选中的结果，保证"随机图"语义；
-// 熔断器保护外部 API；双重检查锁保证线程安全。
+// 设计：每次请求独立随机，不缓存选中的结果，维持"随机图"语义；
+// 熔断器保护外部 API；双重检查锁保护线程安全。
 package service
 
 import (
@@ -38,11 +38,17 @@ type RandomService struct {
 	// 图源空置检查的短时缓存（30s），避免错误请求风暴时频繁扫描文件系统
 	emptyCheckAt   time.Time // 上次检查时间
 	sourceEmptyMap map[model.SourceType]bool // 各渠道空置结果（检查时一并计算）
+
+	// 分类清单快照缓存（30s）：CategoryExists / CategoryExistsFor /
+	// AvailableCategories / pickExistingCategory 共用，避免错误请求风暴时
+	// 对每个分类名单独做文件系统探测（与 emptyCheckAt 相同的缓存策略）
+	catAt    time.Time
+	catCache categorySnapshot
 }
 
 // NewRandomService 创建服务实例。
 //
-// c     — 缓存实例（Redis 或内存降级，始终非 nil）
+// c     — 缓存实例（Redis 或内存降级，非 nil）
 // pool  — 外部 API 池（nil=不支持 external 来源）
 // stats — 统计实例（由 main.go 创建并共享）
 func NewRandomService(rootPath string, c cache.Cache, pool *repository.ExternalPool, stats *Stats) *RandomService {
@@ -92,13 +98,13 @@ func (s *RandomService) GetRepo(source model.SourceType) repository.ImageReposit
 //
 // Category 支持逗号分隔多选，每次随机选一个分类。
 // 每次请求都在仓库层独立随机（不缓存选中的结果），
-// 保证"随机图"语义：同一分类的连续请求也会返回不同图片。
+// 维持"随机图"语义：同一分类的连续请求通常返回不同图片（图库较小时可能重复）。
 func (s *RandomService) Random(ctx context.Context, source model.SourceType, apiName, category string, deviceType model.DeviceType) (*model.Image, error) {
-	// 解析多分类：多分类时只从"当前设备下实际存在"的分类中随机选，
-	// 避免选到不存在（或仅存在于另一设备目录）的分类导致误报 500。
+	// 解析多分类：多分类时只从"实际可用"的分类中随机选（外部渠道按 API 池
+	// 白名单过滤），避免选到不存在的分类导致误报 500。
 	pickedCategory := s.pickExistingCategory(source, category, deviceType)
 	if pickedCategory == "" {
-		return nil, fmt.Errorf("category not found: %s", category)
+		return nil, &model.ErrCategoryNotSupported{Source: string(source), Category: category}
 	}
 
 	// 仓库随机选取
@@ -139,6 +145,16 @@ func (s *RandomService) randomFromExternal(ctx context.Context, apiName, categor
 		if _, ok := s.externalPool.FindByName(apiName); !ok {
 			return nil, &model.ErrAPINotFound{Name: apiName}
 		}
+	}
+
+	// 分类白名单预检：指定的 API 或整个池都不支持该分类时提前返回
+	// ErrCategoryNotSupported（同样不进入熔断器，避免污染熔断计数）。
+	if apiName != "" {
+		if !s.externalPool.APISupportsCategory(apiName, category) {
+			return nil, &model.ErrCategoryNotSupported{Source: "external", Category: category}
+		}
+	} else if !s.externalPool.SupportsCategory(category) {
+		return nil, &model.ErrCategoryNotSupported{Source: "external", Category: category}
 	}
 
 	var img *model.Image
@@ -214,23 +230,21 @@ func (s *RandomService) SourceEmpty(source model.SourceType) bool {
 // CategoryExists 判断指定图源中是否存在指定分类。
 //
 // category 支持逗号分隔多选（与 Random 一致），只要其中任一分类
-// 存在即返回 true。external 图源恒返回 true（分类校验由 API 池完成）。
+// 存在即返回 true。external 图源固定返回 true（分类校验由 API 池完成）。
+// 结果来自 30 秒快照缓存，避免错误请求风暴时频繁扫描文件系统。
 func (s *RandomService) CategoryExists(source model.SourceType, category string) bool {
 	if source == model.SourceExternal {
 		return true // external 的分类由 API 池的 categories 白名单校验，不在此判断
 	}
-	for _, cat := range strings.Split(category, ",") {
-		cat = strings.TrimSpace(cat)
-		if cat == "" {
-			cat = "default"
-		}
+	snap := s.categorySnapshot()
+	for _, cat := range splitCategories(category) {
 		switch source {
 		case model.SourceTxt:
-			if txtCategoryExists(filepath.Join(s.rootPath, "resources", "txt"), cat) {
+			if containsCategory(snap.txtAll, cat) {
 				return true
 			}
 		case model.SourceLocal:
-			if localCategoryExists(filepath.Join(s.rootPath, "resources", "local"), cat) {
+			if containsCategory(snap.localAll, cat) {
 				return true
 			}
 		}
@@ -244,31 +258,31 @@ func (s *RandomService) CategoryExists(source model.SourceType, category string)
 // 用于区分"分类完全不存在"与"分类只在另一设备目录存在"——后者对当前设备
 // 同样返回"分类不存在"提示页，而不是让仓库报错落入 500。
 // category 支持逗号分隔多选，任一分类对当前设备存在即返回 true。
-// external 图源恒返回 true（分类校验由 API 池完成）。
+// external 图源固定返回 true（分类校验由 API 池完成）。
+// 结果同样来自 30 秒快照缓存。
 func (s *RandomService) CategoryExistsFor(source model.SourceType, category string, deviceType model.DeviceType) bool {
 	if source == model.SourceExternal {
 		return true
 	}
 
-	deviceDir := "pc"
-	if deviceType == model.DevicePE {
-		deviceDir = "pe"
+	snap := s.categorySnapshot()
+	var list []string
+	switch source {
+	case model.SourceTxt:
+		list = snap.txtPC
+		if deviceType == model.DevicePE {
+			list = snap.txtPE
+		}
+	case model.SourceLocal:
+		list = snap.localPC
+		if deviceType == model.DevicePE {
+			list = snap.localPE
+		}
 	}
 
-	for _, cat := range strings.Split(category, ",") {
-		cat = strings.TrimSpace(cat)
-		if cat == "" {
-			cat = "default"
-		}
-		switch source {
-		case model.SourceTxt:
-			if txtCategoryExistsForDevice(filepath.Join(s.rootPath, "resources", "txt"), deviceDir, cat) {
-				return true
-			}
-		case model.SourceLocal:
-			if localCategoryExistsForDevice(filepath.Join(s.rootPath, "resources", "local"), deviceDir, cat) {
-				return true
-			}
+	for _, cat := range splitCategories(category) {
+		if containsCategory(list, cat) {
+			return true
 		}
 	}
 	return false
@@ -276,12 +290,13 @@ func (s *RandomService) CategoryExistsFor(source model.SourceType, category stri
 
 // AvailableCategories 返回指定图源当前存在的分类列表（用于提示页展示）。
 // external 图源返回 nil（分类由各 API 动态决定，无全局列表）。
+// 结果来自 30 秒快照缓存；调用方只读，不得修改返回切片。
 func (s *RandomService) AvailableCategories(source model.SourceType) []string {
 	switch source {
 	case model.SourceTxt:
-		return txtCategories(filepath.Join(s.rootPath, "resources", "txt"))
+		return s.categorySnapshot().txtAll
 	case model.SourceLocal:
-		return localCategories(filepath.Join(s.rootPath, "resources", "local"))
+		return s.categorySnapshot().localAll
 	default:
 		return nil
 	}
@@ -299,6 +314,90 @@ func (s *RandomService) AvailableAPIs() []string {
 		names = append(names, a.Name)
 	}
 	return names
+}
+
+// ──────────────────────────────────────────────
+// 分类清单快照（30 秒缓存）
+// ──────────────────────────────────────────────
+
+// categorySnapshot 是 txt/local 图库分类清单的一次扫描快照。
+// txt 列表包含"文件含有效 URL"的分类（与仓库解析规则一致），
+// local 列表包含"目录下直接含图片文件"的分类。
+//
+// 快照 30 秒有效：管理员增删分类后，提示页/多分类筛选最迟 30 秒内感知，
+// 与 checkSourcesEmpty 的缓存策略一致；正常取图路径不受影响（仓库直接读文件，
+// 新增分类仍即时可用）。
+type categorySnapshot struct {
+	txtPC    []string
+	txtPE    []string
+	localPC  []string
+	localPE  []string
+	txtAll   []string // pc+pe 去重合并（pc 在前，顺序稳定）
+	localAll []string
+}
+
+// categorySnapshotNow 扫描四个设备目录，构建分类清单快照。
+func (s *RandomService) categorySnapshotNow() categorySnapshot {
+	txtRoot := filepath.Join(s.rootPath, "resources", "txt")
+	localRoot := filepath.Join(s.rootPath, "resources", "local")
+
+	snap := categorySnapshot{
+		txtPC:   txtCategoriesForDevice(txtRoot, "pc"),
+		txtPE:   txtCategoriesForDevice(txtRoot, "pe"),
+		localPC: localCategoriesForDevice(localRoot, "pc"),
+		localPE: localCategoriesForDevice(localRoot, "pe"),
+	}
+	snap.txtAll = mergeCategoryLists(snap.txtPC, snap.txtPE)
+	snap.localAll = mergeCategoryLists(snap.localPC, snap.localPE)
+	return snap
+}
+
+// categorySnapshot 返回 30 秒内的分类清单快照（过期自动重建）。
+func (s *RandomService) categorySnapshot() categorySnapshot {
+	s.mu.RLock()
+	if time.Since(s.catAt) < 30*time.Second {
+		snap := s.catCache
+		s.mu.RUnlock()
+		return snap
+	}
+	s.mu.RUnlock()
+
+	snap := s.categorySnapshotNow()
+
+	s.mu.Lock()
+	s.catAt = time.Now()
+	s.catCache = snap
+	s.mu.Unlock()
+	return snap
+}
+
+// containsCategory 判断分类是否在列表中（分类数量少，线性扫描足够）。
+func containsCategory(list []string, category string) bool {
+	for _, c := range list {
+		if c == category {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeCategoryLists 合并 pc/pe 两个设备列表并去重（pc 在前）。
+func mergeCategoryLists(pc, pe []string) []string {
+	seen := make(map[string]bool, len(pc)+len(pe))
+	out := make([]string, 0, len(pc)+len(pe))
+	for _, c := range pc {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	for _, c := range pe {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // checkSourcesEmpty 一次性检测三种图源的空置状态，结果缓存 30 秒。
@@ -332,28 +431,35 @@ func (s *RandomService) checkSourcesEmpty() map[model.SourceType]bool {
 	return result
 }
 
-// pickExistingCategory 从逗号分隔的类别中随机选一个"当前设备下实际存在"的分类。
+// pickExistingCategory 从逗号分隔的类别中随机选一个"实际可用"的分类。
 //
-// 多分类场景下先过滤掉当前设备目录下不存在的分类再随机，
-// 避免选到"仅存在于另一设备目录"的分类导致仓库报错、Handler 误判为 500。
+// 多分类场景下先过滤掉当前设备目录下不存在的分类（外部渠道按 API 池分类
+// 白名单过滤）再随机，避免选到不可用的分类导致仓库报错、Handler 误判为 500。
 // 单分类场景不做存在性校验（保持零开销），由仓库/Handler 处理结果。
 //
-// 全部不存在时返回 ""，调用方据此返回"分类不存在"错误。
+// 全部不可用时返回 ""，调用方据此返回"分类不存在"错误。
 func (s *RandomService) pickExistingCategory(source model.SourceType, raw string, deviceType model.DeviceType) string {
 	categories := splitCategories(raw)
 	if len(categories) == 1 {
 		return categories[0] // 单分类直接返回，存在性交给后续处理
 	}
 
-	// 多分类：过滤出当前设备下实际存在的
+	// 多分类：过滤出实际可用的分类
 	var existing []string
 	for _, c := range categories {
+		if source == model.SourceExternal {
+			// 外部渠道：按 API 池的分类白名单过滤
+			if s.externalPool != nil && s.externalPool.SupportsCategory(c) {
+				existing = append(existing, c)
+			}
+			continue
+		}
 		if s.CategoryExistsFor(source, c, deviceType) {
 			existing = append(existing, c)
 		}
 	}
 	if len(existing) == 0 {
-		return "" // 全部不存在，通知 Handler 显示"分类不存在"
+		return "" // 全部不可用，通知 Handler 显示"分类不存在"
 	}
 	return existing[rand.Intn(len(existing))]
 }

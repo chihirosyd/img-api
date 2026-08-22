@@ -1,11 +1,11 @@
 # 自动升级依赖并提交 go.mod / go.sum
 #
-# 说明：本地开发环境未安装 Go，无法手工维护 go.mod / go.sum。
-# 本工作流在每次推送（go.mod 变更）或手动触发时：
+# 说明：本地已有 Go 环境（go get -u ./... && go mod tidy 可直接维护依赖），
+# 本工作流作为兜底：push 的 go.mod 变更若未附带最新 go.sum，
+# 自动执行升级 + 整理并提交，使 CI 与本地构建保持一致：
 #   1. go get -u ./... 将全部依赖升级到最新版本
 #   2. go mod tidy 重新整理依赖并生成 go.sum
 #   3. 自动提交 go.mod / go.sum
-# 保证依赖与 Go 工具链保持同步，并可复现构建。
 name: Update go.sum
 
 on:
@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Upgrade deps & tidy (generates go.sum)
         run: |

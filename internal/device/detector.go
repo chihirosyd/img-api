@@ -21,14 +21,24 @@ var mobileKeywords = []string{
 	"webOS", "Kindle", "Silk", "PlayBook",
 }
 
+// mobileKeywordsLower 是 mobileKeywords 的小写形式（包初始化时预计算，
+// 避免每个请求对关键词重复执行 ToLower；Detect 是热路径）。
+var mobileKeywordsLower = func() []string {
+	lower := make([]string, len(mobileKeywords))
+	for i, kw := range mobileKeywords {
+		lower[i] = strings.ToLower(kw)
+	}
+	return lower
+}()
+
 // Detect 根据 HTTP User-Agent 字符串判断设备类型（大小写不敏感）。
 //
 // 返回值不会是 DeviceAuto——要么是 DevicePC 要么是 DevicePE。
 // 不支持平板/桌面精细区分，统一按二分类处理。
 func Detect(userAgent string) model.DeviceType {
 	ua := strings.ToLower(userAgent)
-	for _, kw := range mobileKeywords {
-		if strings.Contains(ua, strings.ToLower(kw)) {
+	for _, kw := range mobileKeywordsLower {
+		if strings.Contains(ua, kw) {
 			return model.DevicePE
 		}
 	}

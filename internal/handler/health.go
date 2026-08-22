@@ -64,7 +64,7 @@ func (h *HealthHandler) FullHealth(c *gin.Context) {
 	if headerSecret := c.GetHeader("X-Health-Secret"); headerSecret != "" {
 		secret = headerSecret
 	}
-	// 常量时间比较，防止时序攻击
+	// 常量时间比较，降低时序攻击风险
 	if config.C.HealthSecret != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(config.C.HealthSecret)) != 1 {
 		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "invalid health secret"})
 		return
@@ -79,7 +79,7 @@ func (h *HealthHandler) fullHealth(c *gin.Context) {
 
 	// 只对图源仓库的状态做健康判定（txt / local / external）。
 	// external_pool、circuit_breaker、cache 等属于信息性状态，
-	// 不参与"是否健康"的判断，否则会永远误报 degraded。
+	// 不参与"是否健康"的判断，否则将持续误报 degraded。
 	allHealthy := true
 	for _, source := range []string{"txt", "local", "external"} {
 		status, ok := checks[source]
