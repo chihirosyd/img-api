@@ -53,7 +53,7 @@ func NewAPIHandler(rootPath string, svc *service.RandomService, stats *service.S
 
 // Home 处理 GET / —— 按访问者身份分流：
 //   - 显式带了 mode 参数，或 Accept 头含 image/（浏览器 <img> 嵌入）→ 走图片接口
-//   - 浏览器地址栏直接访问 → 返回项目介绍/教程首页
+//   - 浏览器地址栏直接访问 → 返回项目介绍/教程首页（含运行状态仪表盘）
 //
 // 这样根路径既是"首页"又能直接嵌图，两不误。
 func (h *APIHandler) Home(c *gin.Context) {
@@ -67,11 +67,90 @@ func (h *APIHandler) Home(c *gin.Context) {
 		host = "localhost:8080"
 	}
 	page := strings.ReplaceAll(homePage, "{{HOST}}", html.EscapeString(host))
+	page = strings.ReplaceAll(page, "{{STATUS}}", h.homeStatusHTML(c))
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Status(http.StatusOK)
 	_, _ = c.Writer.WriteString(page)
+}
+
+// homeStatusHTML 构建首页"运行状态"区块。
+//
+// 安全语义与 /health 公开模式保持一致：配置了 HEALTH_SECRET 时仅展示极简状态
+// （运行中 + 版本），不向匿名访问者暴露图源健康/统计等内部信息；
+// 分类清单仅在 Debug 模式展示（与提示页策略一致）。
+func (h *APIHandler) homeStatusHTML(c *gin.Context) string {
+	version := html.EscapeString(config.C.Version)
+
+	if config.C.HealthSecret != "" {
+		return `<div class="status-line"><span class="dot"></span>服务运行中` +
+			`<span class="ver">v` + version + `</span></div>` +
+			`<p class="sub">已配置健康检查密钥，完整内部状态请通过健康检查接口查看（见 docs/API.md）。</p>`
+	}
+
+	checks := h.svc.Health(c.Request.Context())
+	snap := h.stats.Snapshot()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, `<div class="status-line"><span class="dot"></span>服务运行中`+
+		`<span class="ver">v%s</span></div>`, version)
+	fmt.Fprintf(&b, `<p class="sub">已运行 %s</p>`,
+		formatDuration(time.Duration(snap.UptimeSeconds)*time.Second))
+
+	b.WriteString(`<table class="status-table"><tbody>`)
+	// external 渠道未被请求过时仓库未初始化，退而展示 external_pool 配置状态
+	extStatus := checks["external"]
+	if extStatus == "" {
+		extStatus = checks["external_pool"]
+	}
+	if extStatus == "" {
+		extStatus = "未初始化"
+	}
+	for _, row := range []struct{ name, status string }{
+		{"txt", checks["txt"]},
+		{"local", checks["local"]},
+		{"external", extStatus},
+	} {
+		fmt.Fprintf(&b, `<tr><td>%s</td><td>%s</td></tr>`, row.name, statusBadge(row.status))
+	}
+	b.WriteString(`</tbody></table>`)
+
+	b.WriteString(`<div class="stat-grid">`)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">总请求</div></div>`, snap.TotalRequests)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">成功</div></div>`, snap.TotalSuccess)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">失败</div></div>`, snap.TotalFail)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">熔断</div></div>`, snap.CircuitTrips)
+	b.WriteString(`</div>`)
+
+	if config.C.Debug {
+		if cats := h.svc.AvailableCategories(model.SourceTxt); len(cats) > 0 {
+			escaped := make([]string, len(cats))
+			for i, cat := range cats {
+				escaped[i] = html.EscapeString(cat)
+			}
+			fmt.Fprintf(&b, `<p class="sub">TXT 分类：%s</p>`, strings.Join(escaped, "、"))
+		}
+	}
+
+	return b.String()
+}
+
+// statusBadge 将仓库健康状态渲染为状态徽章（原始状态保留在 title 提示中）。
+func statusBadge(status string) string {
+	var cls, text string
+	switch {
+	case strings.HasPrefix(status, "healthy"):
+		cls, text = "ok", "健康"
+	case status == "":
+		cls, text = "gray", "未初始化"
+	case strings.Contains(status, "unconfigured") || strings.Contains(status, "disabled"):
+		cls, text = "gray", "未配置"
+	default:
+		cls, text = "warn", "异常"
+	}
+	return fmt.Sprintf(`<span class="badge %s" title="%s">%s</span>`,
+		cls, html.EscapeString(status), text)
 }
 
 // Random 处理 GET /random — 获取一张随机图片。

@@ -5,18 +5,36 @@
 ### Linux / macOS
 
 ```bash
-# 从 GitHub Releases 下载对应平台的 zip 包
+# 1. 从 GitHub Releases 下载对应平台的 zip 包
 # （内含 4 个二进制 + .env.example + config/ + resources/ 骨架目录 + docs/）
 wget https://github.com/chihirosyd/img-api/releases/latest/download/img-api-linux-amd64.zip
 unzip img-api-linux-amd64.zip
+cd img-api
 chmod +x img-api build-index sync-redis health-check
 
-# 准备配置（.env.example 已随 zip 提供）
+# 2. 准备配置（.env.example 已随 zip 提供）
 cp .env.example .env
 
+# 3. 启动服务（前台运行，Ctrl+C 停止）
 # 图库目录骨架已随 zip 提供，直接往 resources/txt/pc/ 添加 .txt 即可
 ./img-api
+
+# 4. 另开一个终端验证
+curl http://localhost:8080/health
+# 浏览器打开 http://localhost:8080/ 可见教程首页，/random 随机出图
 ```
+
+后台运行（可选，关闭终端不中断）：
+
+```bash
+nohup ./img-api > img-api.log 2>&1 &
+
+tail -f img-api.log        # 查看日志
+pkill img-api              # 停止服务
+```
+
+> 🍎 macOS 同理：下载 darwin 对应架构的 zip，其余步骤一致；
+> 长期运行推荐下方 systemd（Linux）/ launchd（macOS）。
 
 > ⚠️ 启动后编辑 `resources/txt/pc/default.txt` 添加图片 URL（一行一个，即时生效）。
 > 如需外部 API，编辑 `config/image.yaml`（重启生效）。
@@ -25,7 +43,6 @@ cp .env.example .env
 > 或删除 `storage/index/local.json` 后重启自动重建。
 >
 > 💡 如果图源还没有图片，访问 `/random` 会返回友好的"开始使用"引导页而非报错。
-```
 
 ### systemd（开机自启）
 
@@ -51,13 +68,66 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now img-api
 ```
 
+排障与查看：
+
+```bash
+systemctl status img-api          # 状态
+journalctl -u img-api -f          # 实时日志
+systemctl restart img-api         # 修改 .env 后重启
+```
+
 ### Windows
 
 ```powershell
-# 下载 img-api-windows-amd64.zip，解压后得到 4 个可执行文件及配置模板/目录骨架
-# 复制 .env.example 为 .env（resources/ 骨架已包含在 zip 中）
+# 1. 从 GitHub Releases 下载 img-api-windows-amd64.zip
+# 2. 解压到目录（如 D:\img-api），exe 必须与 .env、config/、resources/ 同目录
+cd D:\img-api
+
+# 3. 复制配置模板（可选，不改则使用默认配置）
+copy .env.example .env
+
+# 4. 双击 img-api.exe 运行（弹出控制台窗口显示日志，关闭窗口即停止）
+# 或命令行运行：
 .\img-api.exe
+
+# 5. 浏览器验证
+start http://localhost:8080/random
 ```
+
+> 📁 图库编辑方式与其他平台一致：改 `resources\txt\pc\default.txt` 即时生效，
+> 改 `.env` 后重新运行 exe 生效。
+
+#### 后台静默运行（可选，无黑色窗口）
+
+```powershell
+# 启动（隐藏窗口，关闭当前终端不影响服务）
+Start-Process .\img-api.exe -WindowStyle Hidden
+
+# 停止服务
+Get-Process img-api | Stop-Process
+```
+
+#### 开机自启（任务计划程序，无窗口）
+
+管理员 PowerShell 执行一次（路径改成你的解压目录）：
+
+```powershell
+$action  = New-ScheduledTaskAction -Execute "D:\img-api\img-api.exe" -WorkingDirectory "D:\img-api"
+$trigger = New-ScheduledTaskTrigger -AtStartup
+Register-ScheduledTask -TaskName "img-api" -Action $action -Trigger $trigger -RunLevel Highest -Force
+```
+
+管理：任务计划程序库中找到 `img-api`；移除自启：`Unregister-ScheduledTask -TaskName img-api -Confirm:$false`。
+
+#### 防火墙放行（局域网/公网访问时）
+
+管理员 PowerShell 执行一次（仅本机访问可跳过）：
+
+```powershell
+New-NetFirewallRule -DisplayName "img-api 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+```
+
+> 公网直接暴露更推荐 Docker 部署或前方反代（见下方 Nginx 章节）。
 
 ---
 

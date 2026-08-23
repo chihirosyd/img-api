@@ -155,12 +155,25 @@ func TestHome(t *testing.T) {
 	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
 	h := NewAPIHandler(root, svc, stats)
 
-	// 浏览器地址栏访问（Accept: text/html）→ 教程首页 200
+	// 浏览器地址栏访问（Accept: text/html）→ 教程首页 200 + 运行状态仪表盘
 	c, w := newTestContext("")
 	c.Request.Header.Set("Accept", "text/html")
 	h.Home(c)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "img-api") {
 		t.Fatalf("browser home: status=%d body=%q", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "服务运行中") || !strings.Contains(w.Body.String(), "总请求") {
+		t.Fatalf("dashboard missing: %q", w.Body.String())
+	}
+
+	// 配置 HEALTH_SECRET → 首页仅极简状态，不暴露统计等内部信息
+	config.C.HealthSecret = "secret"
+	defer func() { config.C.HealthSecret = "" }()
+	c, w = newTestContext("")
+	c.Request.Header.Set("Accept", "text/html")
+	h.Home(c)
+	if !strings.Contains(w.Body.String(), "服务运行中") || strings.Contains(w.Body.String(), "总请求") {
+		t.Fatalf("secret mode dashboard should hide stats: %q", w.Body.String())
 	}
 
 	// <img> 嵌入（Accept 含 image/）→ 302 图片
