@@ -84,6 +84,18 @@ func TestRenderSetupGuide(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "<svg") {
 		t.Fatalf("svg body missing <svg: %q", w.Body.String())
 	}
+
+	// 浏览器导航（Accept 以 text/html 开头但含 image/avif）→ HTML 引导页 503
+	// （回归：Contains("image/") 会把导航请求误判为图片请求返回 SVG）
+	c, w = newTestContext("")
+	c.Request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+	h.renderSetupGuide(c, model.ModeRedirect)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "img-api") {
+		t.Fatalf("browser guide: status=%d body=%q", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "<svg") {
+		t.Fatalf("browser navigation should get HTML, not SVG: %q", w.Body.String())
+	}
 }
 
 func TestRenderCategoryNotFound(t *testing.T) {
@@ -155,9 +167,10 @@ func TestHome(t *testing.T) {
 	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
 	h := NewAPIHandler(root, svc, stats)
 
-	// 浏览器地址栏访问（Accept: text/html）→ 教程首页 200 + 运行状态仪表盘
+	// 浏览器地址栏访问（真实浏览器 Accept：以 text/html 开头，但包含 image/avif）
+	// → 教程首页 200 + 运行状态仪表盘（回归：Contains("image/") 会误判成图片请求）
 	c, w := newTestContext("")
-	c.Request.Header.Set("Accept", "text/html")
+	c.Request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 	h.Home(c)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "img-api") {
 		t.Fatalf("browser home: status=%d body=%q", w.Code, w.Body.String())
@@ -170,7 +183,7 @@ func TestHome(t *testing.T) {
 	config.C.HealthSecret = "secret"
 	defer func() { config.C.HealthSecret = "" }()
 	c, w = newTestContext("")
-	c.Request.Header.Set("Accept", "text/html")
+	c.Request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 	h.Home(c)
 	if !strings.Contains(w.Body.String(), "服务运行中") || strings.Contains(w.Body.String(), "总请求") {
 		t.Fatalf("secret mode dashboard should hide stats: %q", w.Body.String())

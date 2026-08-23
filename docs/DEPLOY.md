@@ -244,6 +244,50 @@ REFERER_WHITELIST=
 
 ---
 
+## 更新升级
+
+### Docker（compose）部署
+
+```bash
+# 1. （可选）更新 compose 文件（仓库有变动时）
+curl -O https://raw.githubusercontent.com/chihirosyd/img-api/main/docker-compose.yml
+
+# 2. 拉取新镜像并重建容器
+docker compose pull && docker compose up -d
+
+# 3. 验证版本（看 version 字段）
+curl http://localhost:8080/health
+```
+
+> 📌 升级不会动你的数据：`.env`、`config/`、`resources/`、`storage/` 均为宿主机挂载，
+> 重建容器后配置与图库原样保留。
+>
+> 📌 固定版本升级：把 compose 里 `image: ghcr.io/chihirosyd/img-api:latest`
+> 改为 `:v1.2.0`（替换版本号即可）；`latest` 则始终跟随最新发布。
+
+### 二进制部署（Linux / macOS / Windows）
+
+```bash
+# 下载新版本 zip 覆盖旧文件（-o 覆盖；.env / config/ / resources/ / storage/ 保留）
+wget https://github.com/chihirosyd/img-api/releases/latest/download/img-api-linux-amd64.zip
+unzip -o img-api-linux-amd64.zip
+./img-api     # 重启服务
+```
+
+Windows：下载新 zip 覆盖解压到原目录（保留 `.env` 与图库），重新双击 `img-api.exe`。
+
+### 回滚
+
+- Docker：把 compose 里镜像版本号改回上一版（如 `:v1.1.0`）→ `docker compose up -d`；
+- 二进制：重新下载旧版本 zip 覆盖即可。
+
+### 跨版本注意
+
+- 从 v1.0.x 升级到 v1.1.0+：旧 `configs/image.yaml` 会在首次启动时自动迁移到 `config/image.yaml`；
+- 每次升级前建议查看 [CHANGELOG.md](../CHANGELOG.md) 了解变更内容。
+
+---
+
 ## GitHub Actions
 
 推送 tag 自动编译 5 平台二进制并发布 Release：

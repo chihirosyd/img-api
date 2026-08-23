@@ -64,6 +64,7 @@ curl http://localhost:8080/health
 
 > 🐳 compose 默认使用 `ghcr.io/chihirosyd/img-api:latest` 镜像（推送 tag 后自动构建）。
 > 开发者如需从源码构建：取消 `docker-compose.yml` 中 `build:` 段的注释即可。
+> 版本更新/回滚方法见 [docs/DEPLOY.md](docs/DEPLOY.md) 的「更新升级」章节。
 
 ### 二进制部署
 

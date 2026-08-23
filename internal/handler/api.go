@@ -580,10 +580,12 @@ func (h *APIHandler) renderAPINotFound(c *gin.Context, apiName string, available
 }
 
 // acceptsImage 判断客户端是否期望图片响应（如浏览器 <img> 标签嵌入场景）。
-// 浏览器加载 <img src="..."> 时 Accept 头形如 "image/avif,image/webp,...,*/*;q=0.8"。
+//
+// 判据：Accept 以 "image/" 开头。不能只用 Contains("image/")：现代浏览器
+// 地址栏导航的 Accept 也含 image/avif、image/webp 等条目（以 text/html 开头），
+// 用 Contains 会把导航请求误判为图片请求，导致 / 首页与错误提示页返回 SVG 而非 HTML。
 func acceptsImage(c *gin.Context) bool {
-	accept := c.GetHeader("Accept")
-	return strings.Contains(accept, "image/")
+	return strings.HasPrefix(strings.TrimSpace(c.GetHeader("Accept")), "image/")
 }
 
 // writePlaceholderSVG 输出一张内嵌文字的 SVG 占位图。
