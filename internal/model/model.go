@@ -107,7 +107,6 @@ func (m Mode) Valid() bool {
 // RandomParams 封装 GET /random 的全部查询参数。
 // Category 支持逗号分隔多选（如 "anime,scenery"），
 // Service 层会从中随机选取一个。
-// 鉴权 token 参数由 Auth 中间件直接消费，不进入本结构体。
 type RandomParams struct {
 	Type     DeviceType // 设备类型（auto/pc/pe）
 	Source   SourceType // 图片来源（txt/local/external）

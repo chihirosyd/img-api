@@ -27,8 +27,6 @@
 
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `AUTH_ENABLED` | bool | `false` | 是否开启 Token 鉴权 |
-| `AUTH_TOKEN` | string | — | 鉴权密钥，客户端需携带相同 token |
 | `RATE_LIMIT_ENABLED` | bool | `true` | 是否开启 IP 限流 |
 | `RATE_LIMIT_MAX` | int | `60` | 每分钟每 IP 最大请求数 |
 | `REFERER_WHITELIST` | string | — | 防盗链域名白名单，逗号分隔（如 `mysite.com,blog.mysite.com`）。空 Referer 默认放行 |
@@ -132,17 +130,6 @@ OPEN ──超时后──→ HALF_OPEN（放行 3 个请求探测）
 HALF_OPEN ──任一成功──→ CLOSED
 HALF_OPEN ──任一失败──→ OPEN
 ```
-
----
-
-## 健康检查
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `HEALTH_SECRET` | string | — | 健康检查密钥。非空时 `/health` 仅返回极简状态，`/health-{secret}` 或 `X-Health-Secret` 请求头返回完整状态 |
-
-> ⚠️ 建议不要把 `HEALTH_SECRET` 与 `AUTH_TOKEN` 设为相同值：`health-check` CLI 会把密钥
-> 拼进 URL（`/health-{secret}`），可能被反向代理/访问日志记录，两者相同时等同于泄露鉴权 Token。
 
 ---
 

@@ -111,16 +111,12 @@ func main() {
 	apiH := handler.NewAPIHandler(rootPath, svc, stats)
 	healthH := handler.NewHealthHandler(svc, stats)
 
-	// 健康检查接口不经过 Token 鉴权：Docker healthcheck、负载均衡探针等
-	// 场景需要匿名访问，否则开启 AUTH_ENABLED 后容器会被误判为 unhealthy。
+	// 健康检查接口：Docker healthcheck、负载均衡探针等场景匿名访问
 	r.GET("/health", healthH.Health)
-	r.GET("/health-:secret", healthH.FullHealth)
 
-	// 图片接口单独分组（/ 根路径在浏览器访问时返回教程首页，<img> 嵌入场景仍出图），
-	// Token 鉴权（AUTH_ENABLED=true 时生效）只作用于本组
-	api := r.Group("", middleware.Auth())
-	api.GET("/random", apiH.Random)
-	api.GET("/", apiH.Home)
+	// 图片接口（/ 根路径在浏览器访问时返回教程首页，<img> 嵌入场景仍出图）
+	r.GET("/random", apiH.Random)
+	r.GET("/", apiH.Home)
 
 	// ── 第 11 步：优雅启停 ──
 	srv := &http.Server{

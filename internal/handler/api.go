@@ -77,17 +77,9 @@ func (h *APIHandler) Home(c *gin.Context) {
 
 // homeStatusHTML 构建首页"运行状态"区块。
 //
-// 安全语义与 /health 公开模式保持一致：配置了 HEALTH_SECRET 时仅展示极简状态
-// （运行中 + 版本），不向匿名访问者暴露图源健康/统计等内部信息；
 // 分类清单仅在 Debug 模式展示（与提示页策略一致）。
 func (h *APIHandler) homeStatusHTML(c *gin.Context) string {
 	version := html.EscapeString(config.C.Version)
-
-	if config.C.HealthSecret != "" {
-		return `<div class="status-line"><span class="dot"></span>服务运行中` +
-			`<span class="ver">v` + version + `</span></div>` +
-			`<p class="sub">已配置健康检查密钥，完整内部状态请通过健康检查接口查看（见 docs/API.md）。</p>`
-	}
 
 	checks := h.svc.Health(c.Request.Context())
 	snap := h.stats.Snapshot()
@@ -162,7 +154,6 @@ func statusBadge(status string) string {
 //	mode     — redirect（默认）/ json / image
 //	category — 分类名，逗号分隔多选（默认 "default"）
 //	api      — 外部 API 名称（source=external 时可选，空=随机选取）
-//	token    — 鉴权密钥（Auth 中间件消费）
 func (h *APIHandler) Random(c *gin.Context) {
 	h.stats.RecordRequest()
 

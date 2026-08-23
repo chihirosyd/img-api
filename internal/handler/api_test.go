@@ -179,16 +179,6 @@ func TestHome(t *testing.T) {
 		t.Fatalf("dashboard missing: %q", w.Body.String())
 	}
 
-	// 配置 HEALTH_SECRET → 首页仅极简状态，不暴露统计等内部信息
-	config.C.HealthSecret = "secret"
-	defer func() { config.C.HealthSecret = "" }()
-	c, w = newTestContext("")
-	c.Request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-	h.Home(c)
-	if !strings.Contains(w.Body.String(), "服务运行中") || strings.Contains(w.Body.String(), "总请求") {
-		t.Fatalf("secret mode dashboard should hide stats: %q", w.Body.String())
-	}
-
 	// <img> 嵌入（Accept 含 image/）→ 302 图片
 	c, w = newTestContext("")
 	c.Request.Header.Set("Accept", "image/avif,image/webp,*/*;q=0.8")

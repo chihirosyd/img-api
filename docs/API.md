@@ -92,7 +92,6 @@ GET /random?source=external
 | `mode` | string | — | `redirect` | 返回模式：`redirect` / `json` / `image` |
 | `category` | string | — | `default` | 图片分类，逗号分隔多选（如 `anime,scenery`） |
 | `api` | string | — | 随机 | `source=external` 时指定使用哪个外部 API（不传则随机选一个） |
-| `token` | string | 视配置 | — | 鉴权 Token（`AUTH_ENABLED=true` 时必填） |
 
 ### 参数详解
 
@@ -236,13 +235,6 @@ Cache-Control: public, max-age=300
 
 ```json
 {
-  "code": 401,
-  "message": "invalid or missing token"
-}
-```
-
-```json
-{
   "code": 403,
   "message": "access denied: referer not allowed"
 }
@@ -283,13 +275,11 @@ Cache-Control: public, max-age=300
 
 ## 健康检查
 
-### 公开模式
-
 ```
 GET /health
 ```
 
-未配置 `HEALTH_SECRET` 时返回完整内部状态：
+返回完整内部状态：
 
 ```json
 {
@@ -313,38 +303,6 @@ GET /health
 }
 ```
 
-配置 `HEALTH_SECRET=mykey` 后公开模式仅返回极简信息：
-
-```json
-{
-  "status": "ok",
-  "version": "1.0.0"
-}
-```
-
-### 私有模式
-
-```
-GET /health-mykey
-```
-
-需要与 `HEALTH_SECRET` 匹配的密钥，返回完整内部状态（同上）。
-
-> 💡 推荐用请求头传密钥，避免密钥出现在 URL/代理日志中：
-> ```
-> GET /health
-> X-Health-Secret: mykey
-> ```
-> 注意：未配置 `HEALTH_SECRET` 时，`/health-{任意值}` 等同于公开模式（返回完整状态）。
-
-密钥不匹配时返回：
-```json
-{
-  "code": 403,
-  "message": "invalid health secret"
-}
-```
-
 ### 状态码
 
 | status | 含义 |
@@ -356,32 +314,13 @@ GET /health-mykey
 
 ---
 
-## 鉴权
-
-当 `AUTH_ENABLED=true` 时，以下方式传递 Token（优先级从高到低）：
-
-1. **X-Token 头**：`X-Token: your-token`
-2. **Bearer 头**：`Authorization: Bearer your-token`
-3. **URL 参数**：`?token=your-token`（不推荐，会出现在访问日志中）
-
-Token 不匹配时返回：
-```json
-{
-  "code": 401,
-  "message": "invalid or missing token"
-}
-```
-
----
-
 ## 路由一览
 
 | 路由 | 说明 |
 |------|------|
 | `/random` | 获取随机图片 |
-| `/` | 首页：浏览器直接访问返回教程页 + 运行状态仪表盘（配置 `HEALTH_SECRET` 后仅极简状态）；`<img>` 嵌入或带 `mode` 参数时等价于 `/random` |
-| `/health` | 健康检查（公开模式） |
-| `/health-{secret}` | 健康检查（私有模式，需匹配 HEALTH_SECRET） |
+| `/` | 首页：浏览器直接访问返回教程页 + 运行状态仪表盘；`<img>` 嵌入或带 `mode` 参数时等价于 `/random` |
+| `/health` | 健康检查（完整内部状态与运行时统计） |
 
 ---
 
@@ -394,8 +333,7 @@ Token 不匹配时返回：
 | `302` | ✅ 成功 | 默认模式 `redirect` 正在跳转到真实图片 | 无需处理，浏览器和 `<img>` 标签会自动跟随 |
 | `200` | ✅ 成功 | `mode=json` 或 `mode=image` | 无需处理 |
 | `400` | 参数写错 | 参数值不在允许范围，或 `source=local` 没配 `mode=image` | 对照 [请求参数](#请求参数) 表检查拼写 |
-| `401` | 需要 Token | 服务开启了 `AUTH_ENABLED` | 按 [鉴权](#鉴权) 章节携带 token |
-| `403` | 被拒绝 | Referer 不在防盗链白名单，或健康检查密钥错误 | 联系站长确认白名单/密钥 |
+| `403` | 被拒绝 | Referer 不在防盗链白名单 | 联系站长确认白名单 |
 | `404` | 分类或 API 不存在 | 分类名与 txt 文件名不一致、多分类全都不存在、external 池无此 API | 检查拼写；Debug 模式下响应会附可用列表 |
 | `429` | 请求太频繁 | 触发限流 | 放慢频率，或联系站长调整限流配置 |
 | `500` | 服务端处理失败 | 图源临时故障等 | 查看服务日志排查 |

@@ -20,10 +20,10 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 - 🔀 **三种图源** — TXT 图库、本地文件、外部 API 池，可按名称和分类筛选
 - 💾 **Redis 缓存** — SRandMember O(1) 随机 + 内存自动降级
 - ⚡ **熔断保护** — 外部 API 异常三态熔断，保障服务稳定
-- 🛡️ **安全防护** — Token 鉴权 + IP 限流 + Referer 防盗链 + SSRF 防护 + 安全响应头
-- 🔑 **健康检查** — 公开/私有双模式，`/health-{secret}` 返回完整内部状态
+- 🛡️ **安全防护** — IP 限流 + Referer 防盗链 + SSRF 防护 + 安全响应头
+- 🔑 **健康检查** — `/health` 返回完整内部状态与运行时统计
 - 💡 **友好提示页** — 图源未配置 / 分类或 API 不存在时返回引导页（HTML / JSON / SVG 占位图）
-- 🏠 **根路径首页** — 浏览器访问 `/` 展示教程页 + 运行状态仪表盘（状态/统计/图源健康，分类清单仅 Debug 展示；配置 `HEALTH_SECRET` 后仅极简），`<img>` 嵌入时仍直接出图
+- 🏠 **根路径首页** — 浏览器访问 `/` 展示教程页 + 运行状态仪表盘（状态/统计/图源健康，分类清单仅 Debug 展示），`<img>` 嵌入时仍直接出图
 - 🗂️ **本地图片索引** — `local.json` 首启自动生成，支持定时自动刷新，无索引时自动扫目录兜底
 - 📦 **免依赖部署** — 静态编译为独立二进制，无需 Go 环境、数据库或任何运行时；`build-index` / `sync-redis` / `health-check` 三个配套工具随 Release 包提供
 - 🐳 **Docker 支持** — Alpine 多阶段构建、非 root 运行，镜像精简
@@ -99,7 +99,6 @@ GET /random?type=auto&source=txt&mode=redirect&category=default
 | `mode` | string | `redirect` | `redirect` / `json` / `image` |
 | `category` | string | `default` | 逗号分隔多选（如 `anime,scenery`） |
 | `api` | string | — | 指定池中具体的外部 API（需配合 `source=external`；值为 `image.yaml` 中该项的 `name`，不传则随机选一个） |
-| `token` | string | — | 鉴权密钥（Auth 开启时必填） |
 
 > ⚠️ `source=local` 不支持 `mode=redirect`（返回 400）：本地图源返回的是文件系统路径，
 > 无法通过 302 让浏览器访问，请使用 `mode=image` 或 `mode=json`。
@@ -130,8 +129,7 @@ https://your-api.com/random?type=pe&category=anime&mode=json
 ### 健康检查
 
 ```
-GET /health              → 公开模式
-GET /health-{secret}     → 私有模式（完整状态）
+GET /health              → 完整状态与运行时统计
 ```
 
 > 📚 完整 API 文档见 [docs/API.md](docs/API.md)
@@ -144,15 +142,12 @@ GET /health-{secret}     → 私有模式（完整状态）
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `APP_PORT` | `8080` | 监听端口 |
-| `AUTH_ENABLED` | `false` | 是否开启 Token 鉴权 |
-| `AUTH_TOKEN` | — | 鉴权密钥 |
 | `RATE_LIMIT_MAX` | `60` | 每分钟每 IP 最大请求 |
 | `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔） |
 | `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔），反代场景下限流按真实 IP 统计 |
 | `REDIS_ADDR` | — | Redis 地址（留空禁用） |
 | `LOCAL_INDEX_REFRESH_MINUTES` | `0` | 本地图片索引自动刷新间隔（分钟，0=仅首次启动生成） |
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | 熔断失败阈值 |
-| `HEALTH_SECRET` | — | 私有健康检查密钥（⚠️ 建议不要与 AUTH_TOKEN 设为相同值） |
 | `CORS_ENABLED` | `true` | Nginx 反代时可关闭 |
 
 > 📚 完整配置参考见 [docs/CONFIG.md](docs/CONFIG.md)

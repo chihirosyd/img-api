@@ -4,7 +4,6 @@
 //
 //	go run ./cmd/health-check/
 //	go run ./cmd/health-check/ -url http://localhost:8080
-//	go run ./cmd/health-check/ -secret mykey    # 私有模式，完整状态
 package main
 
 import (
@@ -20,7 +19,6 @@ import (
 
 func main() {
 	baseURL := flag.String("url", "http://localhost:8080", "img-api server URL")
-	secret := flag.String("secret", "", "健康检查密钥（访问完整内部状态）")
 	flag.Parse()
 
 	// 去除尾部斜杠，避免 base 为 "http://x/" 时拼出 "//health"
@@ -32,11 +30,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 有密钥 → /health-{secret}，否则 → /health
 	url := base + "/health"
-	if *secret != "" {
-		url = base + "/health-" + *secret
-	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)

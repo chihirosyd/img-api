@@ -35,11 +35,11 @@ func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
 		"APP_DEBUG", "APP_NAME", "APP_HOST", "APP_PORT", "APP_VERSION",
-		"AUTH_ENABLED", "AUTH_TOKEN", "CORS_ENABLED", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MAX",
+		"CORS_ENABLED", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MAX",
 		"REFERER_WHITELIST", "TRUSTED_PROXIES", "DEFAULT_SOURCE", "LOCAL_INDEX_REFRESH_MINUTES",
 		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_DB",
 		"CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_TIMEOUT_SECONDS", "CIRCUIT_HALF_OPEN_MAX",
-		"HEALTH_SECRET", "LOG_LEVEL", "LOG_DIR", "LOG_MAX_AGE", "LOG_MAX_SIZE",
+		"LOG_LEVEL", "LOG_DIR", "LOG_MAX_AGE", "LOG_MAX_SIZE",
 	}
 	saved := make(map[string]string)
 	for _, k := range keys {
@@ -61,13 +61,11 @@ func TestLoad(t *testing.T) {
 
 	dir := t.TempDir()
 	content := "APP_PORT=9090\n" +
-		"AUTH_ENABLED=true\nAUTH_TOKEN=secret\n" +
 		"RATE_LIMIT_MAX=120\n" +
 		"REFERER_WHITELIST=a.com,b.com\n" +
 		"TRUSTED_PROXIES=10.0.0.0/8\n" +
 		"DEFAULT_SOURCE=local\n" +
 		"CIRCUIT_FAILURE_THRESHOLD=10\n" +
-		"HEALTH_SECRET=hs\n" +
 		"LOG_LEVEL=debug\n"
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -80,9 +78,6 @@ func TestLoad(t *testing.T) {
 	if C.Port != 9090 {
 		t.Errorf("Port = %d, want 9090", C.Port)
 	}
-	if !C.AuthEnabled || C.AuthToken != "secret" {
-		t.Errorf("Auth = %v/%q", C.AuthEnabled, C.AuthToken)
-	}
 	if C.RateLimitMax != 120 {
 		t.Errorf("RateLimitMax = %d, want 120", C.RateLimitMax)
 	}
@@ -94,9 +89,6 @@ func TestLoad(t *testing.T) {
 	}
 	if C.CircuitFailureThreshold != 10 {
 		t.Errorf("CircuitFailureThreshold = %d, want 10", C.CircuitFailureThreshold)
-	}
-	if C.HealthSecret != "hs" {
-		t.Errorf("HealthSecret = %q", C.HealthSecret)
 	}
 	if C.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q", C.LogLevel)

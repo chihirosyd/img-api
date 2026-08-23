@@ -13,7 +13,7 @@ import (
 //
 // 应注册在 RequestID 之后，这样日志携带的 request_id 与响应头一致，
 // 便于排障时关联单次请求。
-// 健康检查路径（/health、/health-{secret}）不写访问日志：
+// 健康检查路径（/health）不写访问日志：
 // Docker healthcheck 每 30s 探测一次，记录会造成日志噪声。
 func AccessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {

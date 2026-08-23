@@ -37,8 +37,6 @@ type AppConfig struct {
 	Port int    // HTTP 监听端口
 	Version string // 语义版本号（影响 /health 返回和启动日志）
 
-	AuthToken   string // 鉴权密钥（客户端需携带相同 token）
-	AuthEnabled bool   // 是否启用 Token 鉴权
 	CorsEnabled      bool // 是否启用 CORS 头（Nginx 反代时可关闭）
 	RateLimitEnabled bool // 是否启用 IP 频率限制
 	RateLimitMax     int  // 每分钟每 IP 最大请求数
@@ -57,8 +55,6 @@ type AppConfig struct {
 	CircuitFailureThreshold int // 熔断器连续失败多少次后触发断路
 	CircuitTimeoutSeconds   int // 断路后多少秒尝试半开探测
 	CircuitHalfOpenMax      int // 半开状态最多放行多少个探测请求
-
-	HealthSecret string // 健康检查密钥（非空时 /health 仅返回极简状态）
 
 	LogLevel   string // 日志级别：debug / info / warn / error
 	LogDir     string // 日志文件存放目录（相对于项目根路径）
@@ -117,9 +113,6 @@ func Load(rootPath string) error {
 		Port:  v.GetInt("app_port"),
 		Version: v.GetString("app_version"),
 
-		AuthToken:   v.GetString("auth_token"),
-		AuthEnabled: v.GetBool("auth_enabled"),
-
 		CorsEnabled:      v.GetBool("cors_enabled"),
 		RateLimitEnabled: v.GetBool("rate_limit_enabled"),
 		RateLimitMax:     v.GetInt("rate_limit_max"),
@@ -138,8 +131,6 @@ func Load(rootPath string) error {
 		CircuitFailureThreshold: v.GetInt("circuit_failure_threshold"),
 		CircuitTimeoutSeconds:   v.GetInt("circuit_timeout_seconds"),
 		CircuitHalfOpenMax:      v.GetInt("circuit_half_open_max"),
-
-		HealthSecret: v.GetString("health_secret"),
 
 		LogLevel:   v.GetString("log_level"),
 		LogDir:     v.GetString("log_dir"),
@@ -162,12 +153,9 @@ func Load(rootPath string) error {
 	}
 
 	// ── 配置健全性告警（日志系统尚未初始化，输出到 stderr）──
-	if C.AuthEnabled && C.AuthToken == "" {
-		fmt.Fprintf(os.Stderr, "⚠️  AUTH_ENABLED=true 但 AUTH_TOKEN 为空：所有图片请求都将被 401 拒绝\n")
-	}
 	for name, val := range map[string]string{
-		"auth_token": C.AuthToken, "redis_password": C.RedisPassword, "health_secret": C.HealthSecret,
-		"app_name": C.Name, "app_host": C.Host, "default_source": C.DefaultSource,
+		"redis_password": C.RedisPassword,
+		"app_name":       C.Name, "app_host": C.Host, "default_source": C.DefaultSource,
 		"redis_addr": C.RedisAddr,
 		"referer_whitelist": strings.Join(C.RefererWhitelist, ","),
 		"trusted_proxies":   strings.Join(C.TrustedProxies, ","),
@@ -213,9 +201,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app_version", "1.0.0")
 	v.SetDefault("app_port", 8080)
 
-	v.SetDefault("auth_enabled", false)
-	v.SetDefault("auth_token", "")
-
 	v.SetDefault("cors_enabled", true)
 	v.SetDefault("rate_limit_enabled", true)
 	v.SetDefault("rate_limit_max", 60)
@@ -238,8 +223,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("circuit_failure_threshold", 5)
 	v.SetDefault("circuit_timeout_seconds", 30)
 	v.SetDefault("circuit_half_open_max", 3)
-
-	v.SetDefault("health_secret", "")
 
 	v.SetDefault("log_max_age", 30)
 	v.SetDefault("log_max_size", 0)

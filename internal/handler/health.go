@@ -2,7 +2,6 @@
 package handler
 
 import (
-	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
@@ -31,48 +30,12 @@ func NewHealthHandler(svc *service.RandomService, stats *service.Stats) *HealthH
 	}
 }
 
-// Health 处理 GET /health（公开模式：极简状态）。
-//
-// 如果配置了 HEALTH_SECRET，公开模式仅返回：
-//
-//	{"status":"ok","version":"1.0.0"}
-//
-// 完整内部状态需通过 /health-{secret} 访问。
+// Health 处理 GET /health — 返回服务健康状态与运行时统计。
 func (h *HealthHandler) Health(c *gin.Context) {
-	if config.C.HealthSecret != "" {
-		// 有密钥配置 → 公开模式限制输出
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
-			"version": config.C.Version,
-		})
-		return
-	}
-	// 无密钥配置 → 直接返回完整状态
 	h.fullHealth(c)
 }
 
-// FullHealth 处理 GET /health-{secret}（私有模式）。
-//
-// 密钥校验优先级：
-//  1. 请求头 X-Health-Secret（推荐，避免密钥出现在 URL 中被代理日志记录）
-//  2. URL 路径 /health-{secret}（兼容旧版）
-//
-// 未配置 HEALTH_SECRET 时等同于公开模式。
-func (h *HealthHandler) FullHealth(c *gin.Context) {
-	secret := c.Param("secret")
-	// Header 优先（避免密钥出现在 URL 中）
-	if headerSecret := c.GetHeader("X-Health-Secret"); headerSecret != "" {
-		secret = headerSecret
-	}
-	// 常量时间比较，降低时序攻击风险
-	if config.C.HealthSecret != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(config.C.HealthSecret)) != 1 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "invalid health secret"})
-		return
-	}
-	h.fullHealth(c)
-}
-
-// fullHealth 返回完整内部状态（被 Health 和 FullHealth 复用）。
+// fullHealth 返回完整内部状态。
 func (h *HealthHandler) fullHealth(c *gin.Context) {
 	ctx := c.Request.Context()
 	checks := h.svc.Health(ctx)
