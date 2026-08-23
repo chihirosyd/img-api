@@ -15,7 +15,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 ## ✨ 特性
 
 - 🚀 **高性能** — Go 原生编译，goroutine 高并发，内存占用低（参考值见 docs/DEPLOY.md）
-- 🎲 **每次请求真随机** — 不缓存选中结果，同一分类连续访问通常返回不同图片
+- 🎲 **每次请求随机** — 不缓存选中结果，同一分类连续访问通常返回不同图片
 - 📱 **设备自适应** — 自动识别 PC/手机 User-Agent，返回对应横竖屏图片
 - 🔀 **三种图源** — TXT 图库、本地文件、外部 API 池，可按名称和分类筛选
 - 💾 **Redis 缓存** — SRandMember O(1) 随机 + 内存自动降级
@@ -23,8 +23,9 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 - 🛡️ **安全防护** — Token 鉴权 + IP 限流 + Referer 防盗链 + SSRF 防护 + 安全响应头
 - 🔑 **健康检查** — 公开/私有双模式，`/health-{secret}` 返回完整内部状态
 - 💡 **友好提示页** — 图源未配置 / 分类或 API 不存在时返回引导页（HTML / JSON / SVG 占位图）
+- 🏠 **根路径首页** — 浏览器访问 `/` 展示教程页（三步上手与参数速查），`<img>` 嵌入时仍直接出图
 - 🗂️ **本地图片索引** — `local.json` 首启自动生成，支持定时自动刷新，无索引时自动扫目录兜底
-- 📦 **单文件部署** — 编译为独立二进制，无需任何运行时
+- 📦 **免依赖部署** — 静态编译为独立二进制，无需 Go 环境、数据库或任何运行时；`build-index` / `sync-redis` / `health-check` 三个配套工具随 Release 包提供
 - 🐳 **Docker 支持** — Alpine 多阶段构建、非 root 运行，镜像精简
 - 🔄 **CI/CD** — GitHub Actions 自动编译 5 平台二进制并发布 Release
 - 📊 **访问日志** — 每个请求记录 request_id、状态码与耗时，便于排障（健康检查探测不记录）
@@ -52,11 +53,14 @@ curl http://localhost:8080/health
 
 ```bash
 # 直接使用 GitHub 自动构建的镜像，无需本地编译
-# 首次启动会自动生成 ./config/.env 与 ./configs/image.yaml 示例
+# 首次启动会自动生成 ./config/.env 与 ./config/image.yaml 示例
 # （编辑后 docker compose restart 生效）
 docker compose up -d
 curl http://localhost:8080/health
 ```
+
+> ⚠️ `docker compose` 命令需在 `docker-compose.yml` 所在目录执行；如果报
+> `no configuration file provided`，先 `cd` 到项目目录再执行。
 
 > 🐳 compose 默认使用 `ghcr.io/chihirosyd/img-api:latest` 镜像（推送 tag 后自动构建）。
 > 开发者如需从源码构建：取消 `docker-compose.yml` 中 `build:` 段的注释即可。
@@ -64,7 +68,7 @@ curl http://localhost:8080/health
 ### 二进制部署
 
 从 [Releases](https://github.com/chihirosyd/img-api/releases) 下载对应平台的 zip 包
-（内含 4 个可执行文件 + `.env.example` + `configs/` + `resources/` 目录骨架 + 文档）：
+（内含 4 个可执行文件 + `.env.example` + `config/` + `resources/` 目录骨架 + 文档）：
 
 ```bash
 # Linux / macOS 示例
@@ -144,7 +148,7 @@ GET /health-{secret}     → 私有模式（完整状态）
 | `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔） |
 | `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔），反代场景下限流按真实 IP 统计 |
 | `REDIS_ADDR` | — | Redis 地址（留空禁用） |
-| `LOCAL_INDEX_REFRESH_MINUTES` | `0` | 本地图片索引自动刷新间隔（分钟，0=仅首启生成） |
+| `LOCAL_INDEX_REFRESH_MINUTES` | `0` | 本地图片索引自动刷新间隔（分钟，0=仅首次启动生成） |
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | 熔断失败阈值 |
 | `HEALTH_SECRET` | — | 私有健康检查密钥（⚠️ 建议不要与 AUTH_TOKEN 设为相同值） |
 | `CORS_ENABLED` | `true` | Nginx 反代时可关闭 |
@@ -176,7 +180,7 @@ img-api/
 │   ├── logger/                 # 日志
 │   └── app/                    # 工具
 ├── resources/                  # 图库目录（txt/ 和 local/）
-├── configs/image.yaml          # 外部 API 池配置
+├── config/image.yaml          # 外部 API 池配置
 ├── docs/                       # 文档
 ├── Dockerfile
 └── .env.example
@@ -205,12 +209,13 @@ https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1920
 https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=1920
 ```
 
+**默认分类**：`default.txt` 已随项目提供（Docker 远程镜像部署时首次启动自动生成，含注释示例）。
 **新增分类**：在 `resources/txt/pc/` 下新建 `分类名.txt`，填好 URL，即时生效。
 向已有分类中增删 URL：自动感知文件变化，即时生效。
 
 > ⚠️ 若启用了 Redis 并运行过 sync-redis，TXT 文件的改动不会自动同步到 Redis，
 > 需重新同步后生效：源码环境 `go run ./cmd/sync-redis/`、二进制包 `./sync-redis`、
-> Docker `docker compose exec img-api /app/sync-redis`。
+> Docker `docker compose exec img-api /app/sync-redis`（`img-api` 为 compose 服务名，可用 `docker compose ps --services` 查看实际名称）。
 
 ### 本地图片（source=local）
 
@@ -227,12 +232,17 @@ resources/local/
 
 支持 jpg/png/gif/webp/bmp/svg。
 
-> 📁 `pc/default/` 与 `pe/default/` 目录骨架已随项目提供，直接把图片放进去即可。
+> 📁 源码/二进制包部署时，`pc/default/` 与 `pe/default/` 目录骨架已随项目提供；
+> Docker 远程镜像部署（只下载 compose 文件）时，首次启动会自动补齐这些目录。
+> 直接把图片放进去即可。
 
-> ⚠️ 生效时机：**新增分类**（新目录）即时生效；**已有分类中增删图片**需重建索引后生效
-> （重启服务 / 运行 `./build-index`（源码环境 `go run ./cmd/build-index/`）/ 等待
-> `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新）。
-> 索引重建前删除图片，被随机选中的失效文件会返回 502。
+> ⚠️ 生效时机：**新增分类**（新目录）即时生效；**已有分类中增删图片**需重建索引并重启加载：
+> 先运行 `./build-index`（源码 `go run ./cmd/build-index/`，Docker `docker compose exec img-api /app/build-index`），
+> 再重启服务；或删除 `storage/index/local.json` 后重启自动重建；或等 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新。
+> 索引重建前删除的图片可能随机返回 502，新增的图片不会被选中。
+>
+> 💡 Docker 命令中的 `img-api` 是 compose 服务名（非容器名），
+> 运行 `docker compose ps --services` 查看实际服务名并替换。
 
 > 💡 本地图片请使用 `mode=image`（服务端直接输出）或 `mode=json` 访问，
 > 不支持 `mode=redirect`。
@@ -243,7 +253,7 @@ resources/local/
 
 ### 外部 API（source=external）
 
-编辑 `configs/image.yaml` 配置 API 池，`?source=external` 调用；`?api=名称` 指定池中某个 API（不传则随机选一个）。
+编辑 `config/image.yaml` 配置 API 池，`?source=external` 调用；`?api=名称` 指定池中某个 API（不传则随机选一个）。
 
 > 💬 如果访问的图源还没有配置图片，API 会返回友好的"开始使用"引导页
 > （浏览器直接访问为 HTML 教程、博客 `<img>` 嵌入为 SVG 提示图、`mode=json` 为 JSON），

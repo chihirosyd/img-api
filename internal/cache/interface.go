@@ -38,6 +38,10 @@ type Cache interface {
 	// SCard 返回 Set 集合的成员数量。
 	SCard(ctx context.Context, key string) (int64, error)
 
+	// ScanKeys 返回匹配 pattern（Redis glob，如 "img:pc:*"）的全部 key。
+	// 供 sync-redis 清理已删除分类的孤儿 Set 使用。
+	ScanKeys(ctx context.Context, pattern string) ([]string, error)
+
 	// Name 返回缓存实例标识（如 "redis" / "memory"），用于日志和监控。
 	Name() string
 }

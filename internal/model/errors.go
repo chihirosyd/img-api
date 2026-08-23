@@ -45,7 +45,7 @@ var ErrExternalNotConfigured = &externalNotConfiguredError{}
 type externalNotConfiguredError struct{}
 
 func (e *externalNotConfiguredError) Error() string {
-	return "external source not configured: add external_apis entries in configs/image.yaml"
+	return "external source not configured: add external_apis entries in config/image.yaml"
 }
 
 // ErrRepoHealth 表示仓库健康检查未通过。

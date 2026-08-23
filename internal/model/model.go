@@ -113,7 +113,7 @@ type RandomParams struct {
 	Source   SourceType // 图片来源（txt/local/external）
 	Mode     Mode       // 返回模式（redirect/json/image）
 	Category string     // 分类名（逗号分隔多选，如 "anime,scenery"）
-	ApiName  string     // 外部 API 名称（source=external 时可用，空=随机选取）
+	APIName  string     // 外部 API 名称（source=external 时可用，空=随机选取）
 }
 
 // DefaultRandomParams 返回一组安全的默认参数。

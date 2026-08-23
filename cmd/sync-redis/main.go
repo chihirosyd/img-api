@@ -34,7 +34,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
 		os.Exit(1)
 	}
-	_ = logger.Init("info", filepath.Join(rootPath, "storage", "logs"), 30, 0)
+	_ = logger.Init(config.C.LogLevel, filepath.Join(rootPath, "storage", "logs"), config.C.LogMaxAge, config.C.LogMaxSize)
 
 	// 检查 Redis 是否已配置
 	if !config.C.IsRedisEnabled() {
@@ -53,7 +53,11 @@ func main() {
 	defer redisCache.Close()
 
 	ctx := context.Background()
-	fullDir := filepath.Join(rootPath, *txtDir)
+	// -dir 支持绝对路径（避免 filepath.Join 将绝对路径拼接到 rootPath 后）
+	fullDir := *txtDir
+	if !filepath.IsAbs(fullDir) {
+		fullDir = filepath.Join(rootPath, fullDir)
+	}
 	total := 0
 
 	// 遍历 pc/ 和 pe/ 子目录
@@ -65,6 +69,7 @@ func main() {
 			continue
 		}
 
+		validCategories := make(map[string]bool)
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
 				continue
@@ -82,9 +87,9 @@ func main() {
 
 			// Redis Set key: img:pc:anime, img:pe:scenery
 			redisKey := fmt.Sprintf("img:%s:%s", device, category)
+			validCategories[category] = true
 
 			// 先清旧数据再批量写入
-			// 注意：生产环境应用 SCARD 检查增量更新
 			_ = redisCache.Delete(ctx, redisKey)
 			if err := redisCache.SAdd(ctx, redisKey, urls...); err != nil {
 				fmt.Printf("❌ 写入 Redis 失败: %s → %v\n", redisKey, err)
@@ -94,6 +99,21 @@ func main() {
 			count, _ := redisCache.SCard(ctx, redisKey)
 			fmt.Printf("✅ %-30s → %4d URLs\n", redisKey, count)
 			total += len(urls)
+		}
+
+		// 清理孤儿 Set：分类 txt 文件已删除但 Redis 中仍残留的 key，
+		// 不清理会导致主服务仍从旧 Set 返回已删除分类的图片
+		keys, scanErr := redisCache.ScanKeys(ctx, "img:"+device+":*")
+		if scanErr != nil {
+			fmt.Printf("⚠️  扫描 %s 孤儿 key 失败: %v\n", device, scanErr)
+			continue
+		}
+		for _, k := range keys {
+			cat := strings.TrimPrefix(k, "img:"+device+":")
+			if !validCategories[cat] {
+				_ = redisCache.Delete(ctx, k)
+				fmt.Printf("🧹 清理已删除分类: %s\n", k)
+			}
 		}
 	}
 

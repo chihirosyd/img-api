@@ -95,6 +95,25 @@ func (r *RedisCache) SCard(ctx context.Context, key string) (int64, error) {
 	return r.client.SCard(ctx, key).Result()
 }
 
+// ScanKeys 用 SCAN 游标遍历匹配 pattern 的 key。
+// 不使用 KEYS（生产环境会阻塞 Redis，SCAN 分批进行）。
+func (r *RedisCache) ScanKeys(ctx context.Context, pattern string) ([]string, error) {
+	var keys []string
+	var cursor uint64
+	for {
+		batch, next, err := r.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("redis scan %s: %w", pattern, err)
+		}
+		keys = append(keys, batch...)
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return keys, nil
+}
+
 // Close 关闭 Redis 连接
 func (r *RedisCache) Close() error {
 	return r.client.Close()

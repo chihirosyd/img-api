@@ -6,7 +6,7 @@
 
 ```bash
 # 从 GitHub Releases 下载对应平台的 zip 包
-# （内含 4 个二进制 + .env.example + configs/ + resources/ 骨架目录 + docs/）
+# （内含 4 个二进制 + .env.example + config/ + resources/ 骨架目录 + docs/）
 wget https://github.com/chihirosyd/img-api/releases/latest/download/img-api-linux-amd64.zip
 unzip img-api-linux-amd64.zip
 chmod +x img-api build-index sync-redis health-check
@@ -19,9 +19,10 @@ cp .env.example .env
 ```
 
 > ⚠️ 启动后编辑 `resources/txt/pc/default.txt` 添加图片 URL（一行一个，即时生效）。
-> 如需外部 API，编辑 `configs/image.yaml`（重启生效）。
-> 本地图片放入新分类目录即时生效；放入已有分类（如 `default/`）需重建索引后生效
-> （重启服务或运行 `./build-index`；源码环境用 `go run ./cmd/build-index/`）。
+> 如需外部 API，编辑 `config/image.yaml`（重启生效）。
+> 本地图片放入新分类目录即时生效；放入已有分类（如 `default/`）需重建索引并重启加载：
+> 运行 `./build-index`（源码 `go run ./cmd/build-index/`）后重启服务，
+> 或删除 `storage/index/local.json` 后重启自动重建。
 >
 > 💡 如果图源还没有图片，访问 `/random` 会返回友好的"开始使用"引导页而非报错。
 ```
@@ -71,6 +72,8 @@ mkdir img-api && cd img-api
 curl -O https://raw.githubusercontent.com/chihirosyd/img-api/main/docker-compose.yml
 
 # 2. 启动（自动拉取镜像；首次运行会在 ./config/ 自动生成 .env）
+#    注意：以下所有 docker compose 命令都必须在 docker-compose.yml 所在目录执行
+#    （报 no configuration file provided 时先 cd 到项目目录）
 docker compose up -d
 
 # 3. 验证
@@ -82,10 +85,12 @@ vim config/.env
 docker compose restart
 ```
 
-> 📁 首次启动会自动创建 `config/`、`configs/`、`resources/`、`storage/` 等挂载目录，
-> 并自动生成 `config/.env` 与 `configs/image.yaml`（内置注释示例），直接编辑即可。
+> 📁 首次启动会自动创建 `config/`、`resources/`、`storage/` 等挂载目录，
+> 并自动生成 `config/.env`、`config/image.yaml`（内置注释示例）以及图库骨架：
+> `resources/txt/{pc,pe}/default.txt`、`resources/local/{pc,pe}/default/` 目录，直接编辑即可。
 > 图库文件直接放在宿主机对应目录即可（如 `resources/txt/pc/default.txt`），
-> 外部 API 池直接编辑自动生成的 `configs/image.yaml`（含 picsum / flickr / unsplash 注释模板）。
+> 外部 API 池直接编辑自动生成的 `config/image.yaml`（含 picsum / flickr / unsplash 注释模板）。
+> 旧版本升级：老部署的 `configs/image.yaml` 会在下次启动时自动复制迁移到 `config/image.yaml`。
 > 镜像更新：`docker compose pull && docker compose up -d`。
 
 > 🛠️ 开发者如需从源码构建：在 `docker-compose.yml` 中注释掉 `image:` 行、
@@ -97,7 +102,7 @@ docker compose restart
 > echo "https://example.com/photo1.jpg" >> resources/txt/pc/default.txt
 > echo "https://example.com/photo2.jpg" >> resources/txt/pc/default.txt
 > ```
-> 如需外部 API 池，编辑 `configs/image.yaml` 并重启。
+> 如需外部 API 池，编辑 `config/image.yaml` 并重启。
 > 本地图片索引（`storage/index/local.json`）首启自动生成，
 > 可通过 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新。
 > 修改 `.env` 配置后执行 `docker compose restart` 生效。
@@ -114,6 +119,7 @@ REDIS_ADDR=redis:6379  #端口须和 `.env`，`docker-compose.yml`中一致
 docker compose up -d
 
 # 同步 TXT 图库到 Redis（在容器内执行；修改 TXT 后需重新运行）
+# 注意：img-api 是 compose 服务名（非容器名），可用 docker compose ps --services 查看实际服务名并替换
 docker compose exec img-api /app/sync-redis
 ```
 
@@ -123,6 +129,7 @@ docker compose exec img-api /app/sync-redis
 docker build -t img-api .
 docker run -d -p 8080:8080 \
   -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/config:/app/config \
   -v $(pwd)/resources/txt:/app/resources/txt:ro \
   --name img-api img-api
 ```
@@ -189,7 +196,7 @@ zip 内容：
 - `build-index`：手动重建本地图片索引
 - `sync-redis`：TXT → Redis 同步
 - `.env.example`：配置模板（复制为 `.env` 后修改）
-- `configs/`：外部 API 池配置、`resources/`：图库目录骨架、`docs/`、`README.md`（如仓库已添加 LICENSE 文件也会一并打包）
+- `config/`：外部 API 池配置、`resources/`：图库目录骨架、`docs/`、`README.md`（如仓库已添加 LICENSE 文件也会一并打包）
 
 ---
 

@@ -41,7 +41,7 @@ func TestParseParams(t *testing.T) {
 	c, _ := newTestContext("")
 	p := parseParams(c)
 	if p.Type != model.DeviceAuto || p.Source != model.SourceTxt ||
-		p.Mode != model.ModeRedirect || p.Category != "default" || p.ApiName != "" {
+		p.Mode != model.ModeRedirect || p.Category != "default" || p.APIName != "" {
 		t.Fatalf("default params = %+v", p)
 	}
 
@@ -49,13 +49,21 @@ func TestParseParams(t *testing.T) {
 	c, _ = newTestContext("?type=pe&source=local&mode=json&category=anime,scenery&api=flickr")
 	p = parseParams(c)
 	if p.Type != model.DevicePE || p.Source != model.SourceLocal ||
-		p.Mode != model.ModeJSON || p.Category != "anime,scenery" || p.ApiName != "flickr" {
+		p.Mode != model.ModeJSON || p.Category != "anime,scenery" || p.APIName != "flickr" {
 		t.Fatalf("full params = %+v", p)
+	}
+
+	// 大小写不敏感（source/mode/type 统一转小写，api 由 FindByName 的 EqualFold 匹配）
+	c, _ = newTestContext("?type=PE&source=TXT&mode=JSON&api=Flickr")
+	p = parseParams(c)
+	if p.Type != model.DevicePE || p.Source != model.SourceTxt ||
+		p.Mode != model.ModeJSON || p.APIName != "Flickr" {
+		t.Fatalf("case-insensitive params = %+v", p)
 	}
 }
 
 func TestRenderSetupGuide(t *testing.T) {
-	h := &ApiHandler{}
+	h := &APIHandler{}
 
 	// JSON 模式 → 503 + JSON 提示
 	c, w := newTestContext("")
@@ -79,7 +87,7 @@ func TestRenderSetupGuide(t *testing.T) {
 }
 
 func TestRenderCategoryNotFound(t *testing.T) {
-	h := &ApiHandler{}
+	h := &APIHandler{}
 
 	// JSON 模式 → 404 + 可用列表
 	c, w := newTestContext("")
@@ -109,7 +117,7 @@ func TestServeLocalFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	h := &ApiHandler{rootPath: root}
+	h := &APIHandler{rootPath: root}
 
 	// 正常图片 → 200 + image/jpeg + 原始内容
 	c, w := newTestContext("")
@@ -133,6 +141,44 @@ func TestServeLocalFile(t *testing.T) {
 	}
 }
 
+func TestHome(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "resources", "txt", "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "default.txt"), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := service.NewStats()
+	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
+	h := NewAPIHandler(root, svc, stats)
+
+	// 浏览器地址栏访问（Accept: text/html）→ 教程首页 200
+	c, w := newTestContext("")
+	c.Request.Header.Set("Accept", "text/html")
+	h.Home(c)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "img-api") {
+		t.Fatalf("browser home: status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	// <img> 嵌入（Accept 含 image/）→ 302 图片
+	c, w = newTestContext("")
+	c.Request.Header.Set("Accept", "image/avif,image/webp,*/*;q=0.8")
+	h.Home(c)
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "https://example.com/a.jpg" {
+		t.Fatalf("img embed: status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+
+	// 显式 mode 参数 → 走图片接口（json）
+	c, w = newTestContext("?mode=json")
+	h.Home(c)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "example.com") {
+		t.Fatalf("mode json: status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
 func TestRandomHandler(t *testing.T) {
 	root := t.TempDir()
 	pc := filepath.Join(root, "resources", "txt", "pc")
@@ -145,7 +191,7 @@ func TestRandomHandler(t *testing.T) {
 
 	stats := service.NewStats()
 	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
-	h := NewApiHandler(root, svc, stats)
+	h := NewAPIHandler(root, svc, stats)
 
 	// redirect 模式 → 302 + Location
 	c, w := newTestContext("")

@@ -100,7 +100,7 @@ jobs:
           mkdir -p pkg/img-api
           cp dist/* pkg/img-api/
           cp .env.example pkg/img-api/
-          cp -r configs pkg/img-api/
+          mkdir -p pkg/img-api/config && cp config/image.yaml pkg/img-api/config/
           cp -r resources pkg/img-api/
           cp -r docs pkg/img-api/
           cp README.md pkg/img-api/

@@ -163,7 +163,7 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 	case "json":
 		return p.fetchJSON(ctx, *api, reqURL, widthI, heightI)
 	default:
-		return p.fetchRedirect(ctx, reqURL, widthI, heightI)
+		return p.fetchRedirect(ctx, *api, reqURL, effectiveCategory, widthI, heightI)
 	}
 }
 
@@ -246,10 +246,12 @@ func (p *ExternalPool) APISupportsCategory(name, category string) bool {
 // fetchRedirect 获取重定向后的最终图片 URL。
 // 优先用 HEAD（省流量）；部分图床不支持 HEAD（返回 405 等），
 // 失败时自动降级为 GET 重试一次（不读取响应体）。
-func (p *ExternalPool) fetchRedirect(ctx context.Context, url string, width, height int) (*model.Image, error) {
-	finalURL, err := p.finalURL(ctx, http.MethodHead, url)
+// api.Headers 会附加到请求（与 fetchJSON 一致，如 Authorization）。
+// category 为实际使用的分类（写入返回结果，而非固定的 "external"）。
+func (p *ExternalPool) fetchRedirect(ctx context.Context, api ExternalAPIConfig, url, category string, width, height int) (*model.Image, error) {
+	finalURL, err := p.finalURL(ctx, api.Headers, http.MethodHead, url)
 	if err != nil {
-		finalURL, err = p.finalURL(ctx, http.MethodGet, url)
+		finalURL, err = p.finalURL(ctx, api.Headers, http.MethodGet, url)
 	}
 	if err != nil {
 		return nil, err
@@ -257,18 +259,24 @@ func (p *ExternalPool) fetchRedirect(ctx context.Context, url string, width, hei
 
 	return &model.Image{
 		URL:      finalURL,
-		Category: "external",
+		Category: category,
 		Width:    width,
 		Height:   height,
 	}, nil
 }
 
 // finalURL 发起请求并返回重定向后的最终 URL（不读取响应体）。
-func (p *ExternalPool) finalURL(ctx context.Context, method, url string) (string, error) {
+// headers 为可选自定义请求头（redirect 型 API 同样支持）。
+func (p *ExternalPool) finalURL(ctx context.Context, headers map[string]string, method, url string) (string, error) {
 	// NewRequestWithContext 第 4 个参数为请求体（GET/HEAD 无 body，传 nil）
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("external %s request: %w", method, err)
+	}
+
+	// 添加自定义请求头
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := p.client.Do(req)

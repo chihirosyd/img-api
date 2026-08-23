@@ -39,9 +39,11 @@ COPY --from=builder /build/health-check .
 # 复制运行时文件 + 入口脚本
 COPY docker/entrypoint.sh /app/
 COPY .env.example /app/.env
-COPY configs/ ./configs/
-# 内置示例副本：compose 挂载 ./configs 会覆盖镜像目录，entrypoint 用它兜底生成 image.yaml
-COPY configs/ /app/configs.default/
+COPY config/ ./config/
+# 内置示例副本：compose 挂载 ./config 会覆盖镜像目录，entrypoint 用它兜底生成 image.yaml
+COPY config/ /app/config.default/
+# 同上：compose 挂载 ./resources/** 会覆盖镜像内置骨架，entrypoint 用它兜底补齐
+COPY resources/ /app/resources.default/
 COPY resources/ ./resources/
 COPY storage/ ./storage/
 

@@ -27,8 +27,38 @@ func TestParseWhitelist(t *testing.T) {
 	}
 }
 
+// clearEnv 清空会影响 Load 的环境变量并自动恢复。
+// viper AutomaticEnv 的优先级高于 .env 文件与默认值：开发机终端里若残留
+// APP_PORT 等导出变量（如冒烟测试时设置过），TestLoad 会在污染环境下失败。
+// 清空后测试结果与执行环境无关。
+func clearEnv(t *testing.T) {
+	t.Helper()
+	keys := []string{
+		"APP_DEBUG", "APP_NAME", "APP_HOST", "APP_PORT", "APP_VERSION",
+		"AUTH_ENABLED", "AUTH_TOKEN", "CORS_ENABLED", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MAX",
+		"REFERER_WHITELIST", "TRUSTED_PROXIES", "DEFAULT_SOURCE", "LOCAL_INDEX_REFRESH_MINUTES",
+		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_DB",
+		"CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_TIMEOUT_SECONDS", "CIRCUIT_HALF_OPEN_MAX",
+		"HEALTH_SECRET", "LOG_LEVEL", "LOG_DIR", "LOG_MAX_AGE", "LOG_MAX_SIZE",
+	}
+	saved := make(map[string]string)
+	for _, k := range keys {
+		if v, ok := os.LookupEnv(k); ok {
+			saved[k] = v
+			os.Unsetenv(k)
+		}
+	}
+	t.Cleanup(func() {
+		for k, v := range saved {
+			os.Setenv(k, v)
+		}
+	})
+}
+
 // TestLoad 验证 .env 解析 → 默认值回退 → 结构体映射的完整链路。
 func TestLoad(t *testing.T) {
+	clearEnv(t)
+
 	dir := t.TempDir()
 	content := "APP_PORT=9090\n" +
 		"AUTH_ENABLED=true\nAUTH_TOKEN=secret\n" +
@@ -85,6 +115,8 @@ func TestLoad(t *testing.T) {
 
 // TestLoadMissingEnv 验证无 .env 时使用默认值启动（最小可用）。
 func TestLoadMissingEnv(t *testing.T) {
+	clearEnv(t)
+
 	if err := Load(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}

@@ -1,5 +1,70 @@
 # API 参考文档
 
+## 三步上手：从 0 到第一张图
+
+> 第一次使用这个服务？先看这一节。熟悉之后可直接跳到 [请求参数](#请求参数)。
+
+### 第 1 步：确认服务地址
+
+部署完成后，在浏览器打开下面的地址，能看到随机图片就说明服务通了：
+
+```
+http://<服务器IP>:8080/random      # 示例：http://1.2.3.4:8080/random
+```
+
+绑定域名或反代后换成你的域名，如 `https://img.example.com/random`。
+下文把这一串统称为 `{服务地址}`——使用示例时请把它替换成你自己的地址（花括号一并替换）。
+
+### 第 2 步：URL 拼接规则
+
+一个完整请求的结构：
+
+```
+{服务地址}/random?参数1=值1&参数2=值2
+```
+
+| 规则 | 说明 |
+|------|------|
+| `?` | 只写一次，跟在 `/random` 后面 |
+| `名字=值` | 一个参数一个等式，如 `category=anime` |
+| `&` | 连接多个参数 |
+| 不写 = 用默认值 | 所有参数都是可选的 |
+| 顺序 | 随意，不影响结果 |
+
+对照示例拆解：
+
+```
+https://img.example.com/random?source=txt&category=anime&type=pe
+└────────── 服务地址 ──────────┘└─接口─┘└────────── 参数部分 ──────────┘
+```
+
+> 💡 中文、空格等特殊字符需要 URL 编码；在浏览器地址栏直接输入时会自动处理。
+
+### 第 3 步：复制即用
+
+把 `{服务地址}` 替换成你的地址即可直接使用：
+
+| 需求 | 写法 |
+|------|------|
+| 访问服务首页（教程页） | `{服务地址}/` |
+| 拿一张随机图 | `{服务地址}/random` |
+| 嵌入博客/网页 | `<img src="{服务地址}/random">` |
+| 指定分类 | `{服务地址}/random?category=风景` |
+| 多分类随机选一 | `{服务地址}/random?category=风景,动漫` |
+| 只要电脑横屏图 | `{服务地址}/random?type=pc` |
+| 只要手机竖屏图 | `{服务地址}/random?type=pe` |
+| 要 JSON 数据（前端调用） | `{服务地址}/random?mode=json` |
+| 要图片二进制（隐藏来源） | `{服务地址}/random?mode=image` |
+| 用服务器上的本地图片 | `{服务地址}/random?source=local&mode=image` |
+| 指定外部 API | `{服务地址}/random?source=external&api=picsum` |
+
+> 💡 `source=external` 需要先在 `config/image.yaml` 配置 API 池，未配置时返回 503 引导页
+> （按页面提示配置即可）；`api=picsum` 只是示例名，实际以你的配置为准。
+
+> 💡 没看到图？页面会返回带文字的提示内容，对照 [常见状态码速查](#常见状态码速查) 就能找到原因。
+
+---
+
 ## 获取随机图片
 
 > 🎲 每次请求都会独立随机选取一张图片（服务端不缓存选中的结果），
@@ -11,8 +76,8 @@ GET /random
 或
 GET /random?source=txt
 
-# 本地图片
-GET /random?source=local
+# 本地图片（local 不支持默认的 redirect 模式，需带 mode=image）
+GET /random?source=local&mode=image
 
 # 外部 API 池
 GET /random?source=external
@@ -39,13 +104,16 @@ GET /random?source=external
 | `pc` | 强制返回 PC 端（横屏）图片 |
 | `pe` | 强制返回手机端（竖屏）图片 |
 
+> 📌 平板说明：iPad（iOS 13+）的 User-Agent 是桌面模式、不含移动关键词，
+> 会被识别为 `pc`；需要竖屏图时显式传 `type=pe`。
+
 #### source — 图片来源
 
 | 值 | 说明 | 配置方式 |
 |------|------|---------|
 | `txt` | TXT 图库（推荐） | 新建 `resources/txt/{pc\|pe}/{分类名}.txt` 即时生效；向已有分类增删 URL 即时生效 |
-| `local` | 本地图片文件 | 新建 `resources/local/{pc\|pe}/{分类名}/` 文件夹并放入图片，即时生效；已有分类中增删图片需重建索引 |
-| `external` | 外部 API 池 | 编辑 `configs/image.yaml` 配置多个外部 API，再用 `api` 参数指定用哪个 |
+| `local` | 本地图片文件 | 新建 `resources/local/{pc\|pe}/{分类名}/` 文件夹并放入图片，即时生效；已有分类中增删图片需重建索引并重启加载（详见 [CONFIG.md](CONFIG.md)） |
+| `external` | 外部 API 池 | 编辑 `config/image.yaml` 配置多个外部 API，再用 `api` 参数指定用哪个 |
 
 > ⚠️ `source=external` 只是选择“外部 API 池”这个图源。池里具体用哪个 API 由 `api` 参数决定，不传则随机。
 
@@ -76,7 +144,7 @@ GET /random?source=external
 | `?source=external&api=flickr` | **指定**使用 `flickr`（大小写不敏感） |
 | `?source=external&api=flickr&category=cat` | 指定 API + 指定分类 |
 
-> API 名称对应 `configs/image.yaml` 中 `name` 字段。未配置分类时自动使用 `default_category`（多个随机选），都没有则回退 `"default"`。
+> API 名称对应 `config/image.yaml` 中 `name` 字段。未配置分类时自动使用 `default_category`（多个随机选），都没有则回退 `"default"`。
 
 > 📌 指定的 API 名称在池中不存在时返回 404 的"API 不存在"提示页（`mode=json` 为 JSON，
 > Debug 模式下附 `available` 可用列表），而不是 500。
@@ -311,6 +379,24 @@ Token 不匹配时返回：
 | 路由 | 说明 |
 |------|------|
 | `/random` | 获取随机图片 |
-| `/` | 同 `/random` |
+| `/` | 首页：浏览器直接访问返回教程页；`<img>` 嵌入或带 `mode` 参数时等价于 `/random` |
 | `/health` | 健康检查（公开模式） |
 | `/health-{secret}` | 健康检查（私有模式，需匹配 HEALTH_SECRET） |
+
+---
+
+## 常见状态码速查
+
+> 打开接口但没看到预期结果时，先查这张表。
+
+| 状态码 | 意味着 | 常见原因 | 处理办法 |
+|--------|--------|----------|----------|
+| `302` | ✅ 成功 | 默认模式 `redirect` 正在跳转到真实图片 | 无需处理，浏览器和 `<img>` 标签会自动跟随 |
+| `200` | ✅ 成功 | `mode=json` 或 `mode=image` | 无需处理 |
+| `400` | 参数写错 | 参数值不在允许范围，或 `source=local` 没配 `mode=image` | 对照 [请求参数](#请求参数) 表检查拼写 |
+| `401` | 需要 Token | 服务开启了 `AUTH_ENABLED` | 按 [鉴权](#鉴权) 章节携带 token |
+| `403` | 被拒绝 | Referer 不在防盗链白名单，或健康检查密钥错误 | 联系站长确认白名单/密钥 |
+| `404` | 分类或 API 不存在 | 分类名与 txt 文件名不一致、多分类全都不存在、external 池无此 API | 检查拼写；Debug 模式下响应会附可用列表 |
+| `429` | 请求太频繁 | 触发限流 | 放慢频率，或联系站长调整限流配置 |
+| `500` | 服务端处理失败 | 图源临时故障等 | 查看服务日志排查 |
+| `503` | 图源还没有内容 | 请求的 source 还没配置任何图片 | 页面本身是"开始使用"引导，按提示添加图片 |

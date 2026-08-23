@@ -1,8 +1,10 @@
 # 配置参考
 
-所有配置通过项目根目录的 `.env` 文件管理。首次使用时复制 `.env.example` 为 `.env` 并修改。
+所有配置通过项目根目录的 `.env` 文件管理（外部 API 池配置在 `config/image.yaml`，
+见下方章节）。首次使用时复制 `.env.example` 为 `.env` 并修改。
 
-> ⚠️ 修改 `.env` 后需**重启服务**生效（Docker 部署执行 `docker compose restart`）。
+> ⚠️ 修改 `.env` 后需**重启服务**生效（Docker 部署执行 `docker compose restart`，
+> 需在 `docker-compose.yml` 所在目录执行，否则报 `no configuration file provided`）。
 
 > 🔑 **.env 特殊字符陷阱**：解析器会对值做 `$` 变量展开，并把 `#` 当作注释。
 > 值含 `$` 或 `#` 时（常见于 Redis 密码等），请用**单引号**包裹：
@@ -44,8 +46,28 @@
 
 > 📌 本地图片索引说明：首次启动时若 `storage/index/local.json` 不存在会自动生成。
 > 之后按 `LOCAL_INDEX_REFRESH_MINUTES` 定时重新扫描刷新。
-> 新增分类（新目录）即时可用；已有分类中增删图片需重建索引后生效
-> （重启 / `build-index` / 定时刷新），重建前删除图片可能随机返回 502。
+> 新增分类（新目录）即时可用（索引未命中时直接扫描目录兜底）；
+> 已有分类中增删图片需重建索引并重启加载（`build-index` 后重启、删除索引文件后重启，
+> 或配置 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新）——仅重启服务不会重新扫描目录，
+> 重建前删除的图片可能随机返回 502，新增的图片不会被选中。
+>
+> 🔧 **手动重建 local.json（步骤）**：
+>
+> 1. Docker 部署先确认服务名：运行 `docker compose ps --services` 查看实际服务名，
+>    把下面步骤中的 `img-api` 替换成它（默认服务名就是 `img-api`）；
+>    二进制包 / 源码部署跳过此步。
+> 2. 重建索引（按部署方式三选一）：
+>    - 二进制包：`./build-index`
+>    - 源码：`go run ./cmd/build-index/`
+>    - Docker：`docker compose exec img-api /app/build-index`
+> 3. 让服务加载新索引（二选一）：
+>    - 重启服务（Docker：`docker compose restart`）
+>    - 等 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新（需已配置 > 0）
+>
+> 也可以直接删除 `storage/index/local.json` 后重启，启动时会自动重建。
+>
+> 💡 `img-api` 是 compose **服务名**（不是容器名）。`docker compose ps --services`
+> 可直接列出实际服务名；本文档其他 `docker compose exec img-api ...` 命令同理替换。
 
 ---
 
@@ -68,7 +90,7 @@
 
 ## 外部 API 池
 
-编辑 `configs/image.yaml` 配置。每项支持以下字段：
+编辑 `config/image.yaml` 配置。每项支持以下字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|:--:|------|
@@ -89,7 +111,7 @@
 
 > ⚠️ 如果 `external_apis` 列表为空（未配置任何端点），
 > 访问 `source=external` 会返回 HTTP 503 的"开始使用"引导页（`mode=json` 时返回 JSON，
-> 博客 `<img>` 嵌入时返回 SVG 提示图），指导管理员在 `configs/image.yaml` 中添加端点。
+> 博客 `<img>` 嵌入时返回 SVG 提示图），指导管理员在 `config/image.yaml` 中添加端点。
 
 ---
 
@@ -150,9 +172,9 @@ HALF_OPEN ──任一失败──→ OPEN
 | TXT 增删 URL（未启用 Redis） | 自动感知，即时生效（mtime 快照校验） |
 | TXT 增删 URL（已同步 Redis） | 需重新运行 sync-redis（源码 `go run ./cmd/sync-redis/`，二进制 `./sync-redis`） |
 | local 新增分类（新目录） | 即时 |
-| local 已有分类中增删图片 | 重启服务 / `./build-index`（源码 `go run ./cmd/build-index/`）/ 定时刷新后生效；重建前删除图片可能随机返回 502 |
+| local 已有分类中增删图片 | 重建索引后重启加载：二进制 `./build-index` / 源码 `go run ./cmd/build-index/` / Docker `docker compose exec img-api /app/build-index`，再重启服务；或删除 `storage/index/local.json` 后重启自动重建；或配置 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新。仅重启服务不会重扫目录；重建前删除的图片可能随机返回 502，新增的图片不会被选中 |
 | 分类清单（提示页可用列表 / 多分类筛选） | 30 秒快照缓存：新建分类最迟 30 秒纳入清单；单分类直接取图不受影响、即时生效 |
-| `configs/image.yaml`（外部 API） | 重启服务 |
+| `config/image.yaml`（外部 API） | 重启服务 |
 | `.env` 配置 | 重启服务 |
 
 ---

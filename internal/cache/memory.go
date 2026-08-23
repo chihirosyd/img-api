@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"math/rand"
+	"path"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -75,7 +76,10 @@ func (m *MemoryCache) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, Nil
 	}
 
-	return entry.data, nil
+	// 返回拷贝：调用方持有内部切片引用时可能修改污染缓存
+	data := make([]byte, len(entry.data))
+	copy(data, entry.data)
+	return data, nil
 }
 
 // Set 写入内存（拷贝 value，防止调用方后续修改污染缓存），
@@ -198,6 +202,20 @@ func (m *MemoryCache) SCard(ctx context.Context, key string) (int64, error) {
 		return 0, nil
 	}
 	return int64(len(s)), nil
+}
+
+// ScanKeys 返回内存 Set 中匹配 pattern（Redis glob）的全部 key。
+func (m *MemoryCache) ScanKeys(ctx context.Context, pattern string) ([]string, error) {
+	m.setMu.RLock()
+	defer m.setMu.RUnlock()
+
+	var keys []string
+	for k := range m.sets {
+		if ok, err := path.Match(pattern, k); err == nil && ok {
+			keys = append(keys, k)
+		}
+	}
+	return keys, nil
 }
 
 // Size 返回当前缓存条目数（用于监控）

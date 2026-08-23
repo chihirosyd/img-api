@@ -1,6 +1,7 @@
 # Docker 构建上下文排除（防止敏感文件/本地数据进入镜像）
 .env
-config/
+# 仅排除运行时生成的敏感 .env，image.yaml 示例需要进入镜像（COPY config/）
+config/.env
 storage/logs/*
 storage/index/*
 !storage/logs/.gitkeep

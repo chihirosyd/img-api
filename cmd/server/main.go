@@ -108,7 +108,7 @@ func main() {
 	r.Use(middleware.Referer())
 
 	// ── 第 10 步：注册路由 ──
-	apiH := handler.NewApiHandler(rootPath, svc, stats)
+	apiH := handler.NewAPIHandler(rootPath, svc, stats)
 	healthH := handler.NewHealthHandler(svc, stats)
 
 	// 健康检查接口不经过 Token 鉴权：Docker healthcheck、负载均衡探针等
@@ -116,10 +116,11 @@ func main() {
 	r.GET("/health", healthH.Health)
 	r.GET("/health-:secret", healthH.FullHealth)
 
-	// 图片接口单独分组，Token 鉴权（AUTH_ENABLED=true 时生效）只作用于本组
+	// 图片接口单独分组（/ 根路径在浏览器访问时返回教程首页，<img> 嵌入场景仍出图），
+	// Token 鉴权（AUTH_ENABLED=true 时生效）只作用于本组
 	api := r.Group("", middleware.Auth())
 	api.GET("/random", apiH.Random)
-	api.GET("/", apiH.Random)
+	api.GET("/", apiH.Home)
 
 	// ── 第 11 步：优雅启停 ──
 	srv := &http.Server{

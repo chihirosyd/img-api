@@ -20,11 +20,12 @@ import (
 // IsBlockedIP 判断 IP 是否属于禁止出站访问的地址（SSRF 防护）。
 //
 // 拦截范围：回环、内网（RFC1918）、链路本地、未指定（0.0.0.0 / ::）、
-// IPv6 ULA（fc00::/7）、IPv4 0.0.0.0/8 与 CGNAT（100.64.0.0/10）。
+// 全部组播（224.0.0.0/4 与 ff00::/8）、IPv6 ULA（fc00::/7）、
+// IPv4 0.0.0.0/8 与 CGNAT（100.64.0.0/10）。
 // 注意：0.0.0.0 在 Linux 上等价于本机，必须拦截；ULA 虽可路由但属内部地址。
 func IsBlockedIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
 		return true
 	}
 	if v4 := ip.To4(); v4 != nil {

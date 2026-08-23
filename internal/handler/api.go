@@ -37,18 +37,41 @@ import (
 // 安全：拨号前校验 IP（防 DNS rebinding）+ 10s 超时 + 连接池复用。
 var proxyClient = netx.NewClient(10 * time.Second)
 
-// ApiHandler 处理图片相关的 HTTP 请求。
+// APIHandler 处理图片相关的 HTTP 请求。
 // 持有 Service 引用以获取随机图片，持有 Stats 引用以记录调用统计。
-type ApiHandler struct {
+type APIHandler struct {
 	rootPath string                 // 项目根目录（本地文件输出越界校验的锚点）
 	svc      *service.RandomService // 随机图片服务
 	stats    *service.Stats         // 请求统计（共享实例）
 }
 
-// NewApiHandler 创建 API 处理器。rootPath 是项目根目录，
+// NewAPIHandler 创建 API 处理器。rootPath 是项目根目录，
 // 用于校验 source=local 返回的文件路径确实位于项目内（防越界）。
-func NewApiHandler(rootPath string, svc *service.RandomService, stats *service.Stats) *ApiHandler {
-	return &ApiHandler{rootPath: filepath.Clean(rootPath), svc: svc, stats: stats}
+func NewAPIHandler(rootPath string, svc *service.RandomService, stats *service.Stats) *APIHandler {
+	return &APIHandler{rootPath: filepath.Clean(rootPath), svc: svc, stats: stats}
+}
+
+// Home 处理 GET / —— 按访问者身份分流：
+//   - 显式带了 mode 参数，或 Accept 头含 image/（浏览器 <img> 嵌入）→ 走图片接口
+//   - 浏览器地址栏直接访问 → 返回项目介绍/教程首页
+//
+// 这样根路径既是"首页"又能直接嵌图，两不误。
+func (h *APIHandler) Home(c *gin.Context) {
+	if c.Query("mode") != "" || acceptsImage(c) {
+		h.Random(c)
+		return
+	}
+
+	host := c.Request.Host
+	if host == "" {
+		host = "localhost:8080"
+	}
+	page := strings.ReplaceAll(homePage, "{{HOST}}", html.EscapeString(host))
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
+	c.Status(http.StatusOK)
+	_, _ = c.Writer.WriteString(page)
 }
 
 // Random 处理 GET /random — 获取一张随机图片。
@@ -61,7 +84,7 @@ func NewApiHandler(rootPath string, svc *service.RandomService, stats *service.S
 //	category — 分类名，逗号分隔多选（默认 "default"）
 //	api      — 外部 API 名称（source=external 时可选，空=随机选取）
 //	token    — 鉴权密钥（Auth 中间件消费）
-func (h *ApiHandler) Random(c *gin.Context) {
+func (h *APIHandler) Random(c *gin.Context) {
 	h.stats.RecordRequest()
 
 	params := parseParams(c)
@@ -115,7 +138,7 @@ func (h *ApiHandler) Random(c *gin.Context) {
 
 	// 委托 Service 层获取随机图片
 	ctx := c.Request.Context()
-	img, err := h.svc.Random(ctx, params.Source, params.ApiName, params.Category, deviceType)
+	img, err := h.svc.Random(ctx, params.Source, params.APIName, params.Category, deviceType)
 	if err != nil {
 		h.stats.RecordFail()
 
@@ -200,7 +223,7 @@ func (h *ApiHandler) Random(c *gin.Context) {
 //
 // 安全：仅允许 http/https、阻止内网 IP、校验 Content-Type、50MB 上限，
 // SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
-func (h *ApiHandler) proxyImage(c *gin.Context, imageURL string) {
+func (h *APIHandler) proxyImage(c *gin.Context, imageURL string) {
 	// SSRF 防护：只允许 http/https
 	parsed, err := url.Parse(imageURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -268,7 +291,7 @@ func (h *ApiHandler) proxyImage(c *gin.Context, imageURL string) {
 // serveLocalFile 直接输出本地文件（source=local + mode=image）。
 // 安全：防路径穿越、拒绝符号链接、仅允许图片扩展名、50MB 上限，
 // SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
-func (h *ApiHandler) serveLocalFile(c *gin.Context, filePath string) {
+func (h *APIHandler) serveLocalFile(c *gin.Context, filePath string) {
 	cleanPath := filepath.Clean(filePath)
 
 	// 安全检查 0：文件必须位于项目根目录内（防绝对路径越界）
@@ -352,7 +375,7 @@ func (h *ApiHandler) serveLocalFile(c *gin.Context, filePath string) {
 //   - mode=json         → JSON
 //   - 图片请求（Accept 含 image/ 或 mode=image）→ SVG 占位图（博客 <img> 嵌入也能看到提示）
 //   - 其它              → HTML 引导页
-func (h *ApiHandler) renderSetupGuide(c *gin.Context, mode model.Mode) {
+func (h *APIHandler) renderSetupGuide(c *gin.Context, mode model.Mode) {
 	if mode == model.ModeJSON {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"code":    503,
@@ -380,7 +403,7 @@ func (h *ApiHandler) renderSetupGuide(c *gin.Context, mode model.Mode) {
 //
 // 图源有内容，但请求的 category 参数在渠道中不存在时触发。
 // available 仅在 Debug 模式由调用方传入（生产环境不暴露分类清单）。
-func (h *ApiHandler) renderCategoryNotFound(c *gin.Context, category string, available []string, mode model.Mode) {
+func (h *APIHandler) renderCategoryNotFound(c *gin.Context, category string, available []string, mode model.Mode) {
 	if mode == model.ModeJSON {
 		resp := gin.H{
 			"code":    404,
@@ -431,7 +454,7 @@ func (h *ApiHandler) renderCategoryNotFound(c *gin.Context, category string, ava
 // 触发条件：source=external 且 api 参数指定的名称在 image.yaml 池中不存在。
 // 属于配置错误而非上游故障，因此返回 404 提示而非 500。
 // available 仅在 Debug 模式由调用方传入（生产环境不暴露 API 清单）。
-func (h *ApiHandler) renderAPINotFound(c *gin.Context, apiName string, available []string, mode model.Mode) {
+func (h *APIHandler) renderAPINotFound(c *gin.Context, apiName string, available []string, mode model.Mode) {
 	if mode == model.ModeJSON {
 		resp := gin.H{
 			"code":    404,
@@ -449,7 +472,7 @@ func (h *ApiHandler) renderAPINotFound(c *gin.Context, apiName string, available
 		if len(available) > 0 {
 			lines = append(lines, "可用 API："+strings.Join(available, "、"))
 		} else {
-			lines = append(lines, "请检查 configs/image.yaml 中的 name 字段")
+			lines = append(lines, "请检查 config/image.yaml 中的 name 字段")
 		}
 		h.writePlaceholderSVG(c, "API 不存在", lines)
 		return
@@ -458,7 +481,7 @@ func (h *ApiHandler) renderAPINotFound(c *gin.Context, apiName string, available
 	// 可用 API 列表：仅 Debug 模式传入，否则提示检查配置文件
 	var listHTML strings.Builder
 	if len(available) == 0 {
-		listHTML.WriteString("请检查 configs/image.yaml 中的 name 字段")
+		listHTML.WriteString("请检查 config/image.yaml 中的 name 字段")
 	} else {
 		for i, name := range available {
 			if i > 0 {
@@ -491,7 +514,7 @@ func acceptsImage(c *gin.Context) bool {
 //
 // ⚠️ 状态码固定为 200：浏览器对 <img> 标签的非 2xx 响应不渲染 body（显示裂图），
 // 因此虽然语义上是"未配置"，也必须用 200 才能让提示图正常显示。
-func (h *ApiHandler) writePlaceholderSVG(c *gin.Context, title string, lines []string) {
+func (h *APIHandler) writePlaceholderSVG(c *gin.Context, title string, lines []string) {
 	var b strings.Builder
 	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">`)
 	b.WriteString(`<rect width="800" height="400" fill="#f6f7f9"/>`)
@@ -523,22 +546,22 @@ func parseParams(c *gin.Context) model.RandomParams {
 	params := model.DefaultRandomParams()
 
 	if v := c.Query("type"); v != "" {
-		params.Type = model.DeviceType(v)
+		params.Type = model.DeviceType(strings.ToLower(strings.TrimSpace(v)))
 	}
 	if v := c.Query("source"); v != "" {
-		params.Source = model.SourceType(v)
+		params.Source = model.SourceType(strings.ToLower(strings.TrimSpace(v)))
 	} else {
 		// 使用配置的默认来源
-		params.Source = model.SourceType(config.C.DefaultSource)
+		params.Source = model.SourceType(strings.ToLower(strings.TrimSpace(config.C.DefaultSource)))
 	}
 	if v := c.Query("mode"); v != "" {
-		params.Mode = model.Mode(v)
+		params.Mode = model.Mode(strings.ToLower(strings.TrimSpace(v)))
 	}
 	if v := c.Query("category"); v != "" {
 		params.Category = v
 	}
 	if v := c.Query("api"); v != "" {
-		params.ApiName = v
+		params.APIName = v
 	}
 
 	return params

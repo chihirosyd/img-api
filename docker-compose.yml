@@ -8,6 +8,12 @@ services:
     #   dockerfile: Dockerfile
     # 注意：不设置固定 container_name，避免同机部署多实例时命名冲突
     restart: unless-stopped
+    # 容器 stdout 日志轮转（不锁 driver，跟随 daemon 全局设置；
+    # 已在 daemon.json 配置全局轮转的可删除本段）
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "8080:8080"
     healthcheck:
@@ -19,18 +25,17 @@ services:
     environment:
       - APP_ROOT=/app
     volumes:
-      # 配置目录（首次启动自动生成 .env，编辑后 restart 生效）
+      # 配置目录（.env 与 image.yaml 均在此，编辑后 restart 生效）
       - ./config:/app/config
-      # 外部 API 池配置（image.yaml），挂载后无需重建镜像即可修改
-      - ./configs:/app/configs
       # 持久化日志
       - ./storage/logs:/app/storage/logs
       # 本地图片索引（local.json，首启自动生成；不挂载则容器重建后重新生成）
       - ./storage/index:/app/storage/index
-      # 挂载图库（方便在不重建镜像的情况下修改）
-      - ./resources/txt/pc:/app/resources/txt/pc:ro
-      - ./resources/txt/pe:/app/resources/txt/pe:ro
-      - ./resources/local:/app/resources/local:ro
+      # 挂载图库（方便在不重建镜像的情况下修改；不加 :ro 是为了让 entrypoint
+      # 首次启动时能在宿主机侧补齐目录骨架与示例 default.txt）
+      - ./resources/txt/pc:/app/resources/txt/pc
+      - ./resources/txt/pe:/app/resources/txt/pe
+      - ./resources/local:/app/resources/local
 
   # ── Redis（可选）──
   # 如需启用：取消下面注释，并在 .env 中设置 REDIS_ADDR=redis:6379

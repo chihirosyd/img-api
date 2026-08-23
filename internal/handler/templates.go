@@ -2,8 +2,64 @@ package handler
 
 // 本文件集中提示页的 HTML 模板常量，避免挤占 api.go 的处理逻辑。
 //
+//   - homePage             — 根路径 / 的教程首页（{{HOST}} 由 Home 动态替换）
 //   - setupGuidePage       — 图源未配置时的"开始使用"引导页
 //   - categoryNotFoundPage — 分类不存在时的提示页（{{CATEGORY}} / {{AVAILABLE}} 由 renderCategoryNotFound 动态替换）
+
+// homePage 是访问根路径 / 时的项目首页（教程页）。
+// {{HOST}} 由 Home handler 替换为当前请求的 Host，用于展示完整示例 URL。
+const homePage = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>img-api · 随机图片 API</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #f6f7f9; margin: 0; padding: 40px 16px; color: #333; }
+  .card { max-width: 760px; margin: 0 auto; background: #fff;
+          border: 1px solid #e4e7eb; border-radius: 12px; padding: 32px 40px;
+          box-shadow: 0 2px 8px rgba(0,0,0,.05); }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  h2 { font-size: 17px; margin: 26px 0 8px; border-left: 4px solid #2f81f7;
+       padding-left: 10px; }
+  p { line-height: 1.8; font-size: 14px; }
+  .sub { color: #666; font-size: 13px; margin: 0 0 20px; }
+  code { background: #f1f3f5; border-radius: 4px; padding: 2px 6px;
+         font-family: Consolas, Monaco, monospace; font-size: 13px; color: #c7254e; }
+  pre { background: #282c34; color: #abb2bf; border-radius: 8px;
+        padding: 14px 18px; overflow-x: auto; font-size: 13px; line-height: 1.7; }
+  pre code { background: none; color: inherit; padding: 0; }
+  .tip { background: #eef6ff; border-left: 4px solid #2f81f7; border-radius: 4px;
+         padding: 10px 14px; font-size: 13px; margin-top: 20px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎲 img-api 随机图片 API</h1>
+  <p class="sub">服务运行中。把图片地址嵌入博客，每次访问随机返回一张图片。</p>
+
+  <h2>三步上手</h2>
+  <p>1️⃣ 打开 <code>http://{{HOST}}/random</code>，浏览器会直接跳转到一张随机图片</p>
+  <p>2️⃣ 博客/网页嵌入：</p>
+  <pre><code>&lt;img src="http://{{HOST}}/random" alt="随机图片"&gt;</code></pre>
+  <p>3️⃣ 指定分类（分类名 = 图库 txt 文件名）：</p>
+  <pre><code>http://{{HOST}}/random?category=风景</code></pre>
+
+  <h2>常用参数</h2>
+  <pre><code>type    auto / pc / pe            设备类型（手机竖屏用 pe）
+source  txt / local / external    图片来源
+mode    redirect / json / image   返回模式
+category 分类名                   逗号多选，如 anime,scenery</code></pre>
+
+  <h2>完整文档</h2>
+  <p>详见仓库 <code>docs/API.md</code>（参数详解、响应格式、状态码速查）。</p>
+
+  <div class="tip">💡 图源还没有图片时，访问 /random 会显示"开始使用"引导页，
+       按提示添加图片即可。</div>
+</div>
+</body>
+</html>`
 
 // setupGuidePage 是图源未配置时展示的"开始使用"引导页（纯文字）。
 const setupGuidePage = `<!DOCTYPE html>
@@ -51,10 +107,10 @@ https://example.com/photo2.jpg</code></pre>
   <pre><code>resources/local/pc/default/
   ├── photo1.jpg
   └── photo2.png</code></pre>
-  <p>新增分类（新目录）即时生效；已有分类中增删图片需重启服务或重建索引。</p>
+  <p>新增分类（新目录）即时生效；已有分类中增删图片需重建索引并重启加载。</p>
 
   <h2>方式三：外部 API 池</h2>
-  <p>编辑 <code>configs/image.yaml</code>，在 <code>external_apis</code> 下添加 API 端点：</p>
+  <p>编辑 <code>config/image.yaml</code>，在 <code>external_apis</code> 下添加 API 端点：</p>
   <pre><code>external_apis:
   - name: picsum
     url: https://picsum.photos/{width}/{height}
@@ -132,7 +188,7 @@ const apiNotFoundPage = `<!DOCTYPE html>
   <h1>🔍 API 不存在<span class="badge">404</span></h1>
   <p>你指定的 API <code>{{API}}</code> 在外部 API 池中不存在。</p>
   <p>当前可用的 API：{{AVAILABLE}}</p>
-  <div class="tip">💡 API 名称对应 <code>configs/image.yaml</code> 中 <code>external_apis</code> 各项的
+  <div class="tip">💡 API 名称对应 <code>config/image.yaml</code> 中 <code>external_apis</code> 各项的
       <code>name</code> 字段，例如 <code>?source=external&amp;api=flickr</code>。</div>
 </div>
 </body>

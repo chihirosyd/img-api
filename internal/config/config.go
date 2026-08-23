@@ -11,7 +11,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -70,7 +69,7 @@ type AppConfig struct {
 // Load 从指定项目根目录加载所有配置。
 //
 // 配置优先级（高 → 低）：系统环境变量 > .env 文件 > 默认值。
-// configs/image.yaml 单独供外部 API 池模块（ExternalPool）读取，
+// config/image.yaml 单独供外部 API 池模块（ExternalPool）读取，
 // 不在环境变量/默认值体系内。
 //
 // 任意配置文件缺失都不报错，以保持最小可用；
@@ -79,13 +78,14 @@ func Load(rootPath string) error {
 	v = viper.New()
 
 	// 步骤 1 — .env 文件（可选）
-	v.SetConfigFile(rootPath + "/.env")
-	v.SetConfigType("env")
-	if err := v.ReadInConfig(); err != nil {
-		// 文件缺失属正常（使用默认值）；存在但解析失败时提示用户
-		// （此时日志系统尚未初始化，输出到 stderr）
-		var nf viper.ConfigFileNotFoundError
-		if !errors.As(err, &nf) {
+	// 先 os.Stat 判断存在再读取：跨平台一致地静默处理“文件缺失”，
+	// 避免 viper 在部分平台（如 Windows 路径不存在场景）将缺失误报为解析失败
+	envFile := rootPath + "/.env"
+	if _, statErr := os.Stat(envFile); statErr == nil {
+		v.SetConfigFile(envFile)
+		v.SetConfigType("env")
+		if err := v.ReadInConfig(); err != nil {
+			// 文件存在但解析失败：此时日志系统尚未初始化，输出到 stderr
 			fmt.Fprintf(os.Stderr, "⚠️  failed to parse .env: %v\n", err)
 		}
 	}
@@ -95,13 +95,14 @@ func Load(rootPath string) error {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	// 步骤 3 — 外部 API 池 YAML 配置（可选）
-	v.SetConfigFile(rootPath + "/configs/image.yaml")
-	v.SetConfigType("yaml")
-	if err := v.MergeInConfig(); err != nil {
-		// image.yaml 不是必须的，缺失不报错；存在但解析失败时提示
-		var nf viper.ConfigFileNotFoundError
-		if !errors.As(err, &nf) {
-			fmt.Fprintf(os.Stderr, "⚠️  failed to parse configs/image.yaml: %v\n", err)
+	// 同样先 Stat 再读取（跨平台一致地静默处理文件缺失）
+	imageFile := rootPath + "/config/image.yaml"
+	if _, statErr := os.Stat(imageFile); statErr == nil {
+		v.SetConfigFile(imageFile)
+		v.SetConfigType("yaml")
+		if err := v.MergeInConfig(); err != nil {
+			// image.yaml 存在但解析失败：提示用户
+			fmt.Fprintf(os.Stderr, "⚠️  failed to parse config/image.yaml: %v\n", err)
 		}
 	}
 
@@ -166,6 +167,10 @@ func Load(rootPath string) error {
 	}
 	for name, val := range map[string]string{
 		"auth_token": C.AuthToken, "redis_password": C.RedisPassword, "health_secret": C.HealthSecret,
+		"app_name": C.Name, "app_host": C.Host, "default_source": C.DefaultSource,
+		"redis_addr": C.RedisAddr,
+		"referer_whitelist": strings.Join(C.RefererWhitelist, ","),
+		"trusted_proxies":   strings.Join(C.TrustedProxies, ","),
 	} {
 		if strings.Contains(val, "$") {
 			fmt.Fprintf(os.Stderr, "⚠️  配置 %s 包含 $：.env 解析器会将其作为变量展开，请用单引号包裹该值（详见 docs/CONFIG.md）\n", name)
