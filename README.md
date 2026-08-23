@@ -134,6 +134,7 @@ GET /health-{secret}     → 私有模式（完整状态）
 ```
 
 > 📚 完整 API 文档见 [docs/API.md](docs/API.md)
+> 🗒️ 版本更新内容见 [CHANGELOG.md](CHANGELOG.md)
 
 ---
 

@@ -196,7 +196,7 @@ zip 内容：
 - `build-index`：手动重建本地图片索引
 - `sync-redis`：TXT → Redis 同步
 - `.env.example`：配置模板（复制为 `.env` 后修改）
-- `config/`：外部 API 池配置、`resources/`：图库目录骨架、`docs/`、`README.md`（如仓库已添加 LICENSE 文件也会一并打包）
+- `config/`：外部 API 池配置、`resources/`：图库目录骨架、`docs/`、`README.md`、`CHANGELOG.md`（如仓库已添加 LICENSE 文件也会一并打包）
 
 ---
 

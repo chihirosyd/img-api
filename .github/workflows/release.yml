@@ -104,6 +104,7 @@ jobs:
           cp -r resources pkg/img-api/
           cp -r docs pkg/img-api/
           cp README.md pkg/img-api/
+          cp CHANGELOG.md pkg/img-api/
           # LICENSE 由仓库在 GitHub 上创建（可选），存在时才打包
           [ -f LICENSE ] && cp LICENSE pkg/img-api/
           cd pkg
