@@ -2,6 +2,12 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.4.2] - 2026-08-24
+
+### 修复
+
+- 首页内容溢出被裁剪：长 URL 撑破三列网格（列宽无上限 + 卡片 `overflow: hidden`）；列宽改用 `minmax(0,1fr)`、长文本强制换行、新增 700px 中屏断点
+
 ## [1.4.1] - 2026-08-24
 
 ### 移除
