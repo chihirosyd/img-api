@@ -41,23 +41,29 @@ const homePage = `<!DOCTYPE html>
   /* Hero 与链接按钮 */
   .hero { display: flex; align-items: flex-start; justify-content: space-between;
           flex-wrap: wrap; gap: 10px; }
+  .hero > div { min-width: 0; } /* 防止标题文字把 flex 子项撑破 */
   .btn { display: inline-block; text-decoration: none; font-size: 13px; font-weight: 500;
          color: #2f81f7; border: 1px solid #2f81f7; border-radius: 999px;
          padding: 6px 16px; transition: all .15s ease; white-space: nowrap; }
   .btn:hover { background: #2f81f7; color: #fff; }
 
   /* 三步上手卡片 */
-  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 2px; }
-  .step { background: #f8fafc; border: 1px solid #edf0f5; border-radius: 10px; padding: 12px; }
+  .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+           gap: 10px; margin: 6px 0 2px; }
+  .step { background: #f8fafc; border: 1px solid #edf0f5; border-radius: 10px;
+          padding: 12px; min-width: 0; }
   .step .num { display: inline-flex; width: 22px; height: 22px; border-radius: 50%;
                background: #2f81f7; color: #fff; font-size: 13px; font-weight: 600;
                align-items: center; justify-content: center; margin-right: 6px; }
   .step .t { font-size: 14px; font-weight: 600; color: #1f2937; }
-  .step p { font-size: 12.5px; margin: 6px 0 0; color: #5b6472; line-height: 1.7; }
+  .step p { font-size: 12.5px; margin: 6px 0 0; color: #5b6472; line-height: 1.7;
+            overflow-wrap: anywhere; }
+  .step code { overflow-wrap: anywhere; word-break: break-all; }
 
   /* 参数表格 */
   .params-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 2px; }
-  .params-table td { padding: 6px 8px; border-bottom: 1px solid #f0f2f6; vertical-align: top; }
+  .params-table td { padding: 6px 8px; border-bottom: 1px solid #f0f2f6;
+                     vertical-align: top; overflow-wrap: anywhere; }
   .params-table td:first-child { width: 110px; white-space: nowrap; }
 
   /* 页脚 */
@@ -77,8 +83,8 @@ const homePage = `<!DOCTYPE html>
   @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(34,197,94,.35); }
                      50% { box-shadow: 0 0 0 6px rgba(34,197,94,0); } }
   .status-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0 4px; }
-  .status-table td { padding: 7px 8px; border-bottom: 1px solid #f0f2f6; }
-  .status-table td:first-child { width: 90px; color: #8a94a6; }
+  .status-table td { padding: 7px 8px; border-bottom: 1px solid #f0f2f6; overflow-wrap: anywhere; }
+  .status-table td:first-child { width: 90px; color: #8a94a6; white-space: nowrap; }
   .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; }
   .badge.ok   { background: #e6f7ec; color: #16803c; }
   .badge.warn { background: #fef3e2; color: #b45309; }
@@ -102,6 +108,12 @@ const homePage = `<!DOCTYPE html>
     .tip { background: #131c2e; }
     .badge.gray { background: #262b36; color: #a7adb8; }
     .footer { color: #6d7686; }
+  }
+
+  /* 中屏：卡片内三列太挤，改为单列 */
+  @media (max-width: 700px) {
+    .steps { grid-template-columns: 1fr; }
+    .stat-grid { grid-template-columns: repeat(2, 1fr); }
   }
 
   /* 移动端 */
