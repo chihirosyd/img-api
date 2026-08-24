@@ -21,8 +21,8 @@ type memEntry struct {
 // MemoryCache 基于 sync.Map 的进程内缓存。
 //
 // 作为 Redis 连接失败时的自动降级方案，提供与 Redis 相同的 Cache 接口。
-// Set 类型操作（SAdd/SRandMember/SCard）使用独立 RWMutex + map 实现，
-// 避免旧版逗号分隔字符串方案的竞态和解析缺陷。
+// Set 类型操作（SAdd/SRandMember/SCard）使用独立的 RWMutex + map 实现，
+// 与 sync.Map 条目互不干扰，保证并发安全。
 //
 // 容量限制：最多 maxItems 个缓存条目，超出时随机淘汰旧条目。
 //

@@ -284,7 +284,7 @@ GET /health
 ```json
 {
   "status": "ok",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "uptime": "2h 5m 30s",
   "checks": {
     "txt": "healthy",
@@ -311,6 +311,7 @@ GET /health
 | `degraded` | 部分图源仓库不可用（服务仍可处理其他来源） |
 
 > `external_pool` / `circuit_breaker` / `cache` 为信息性状态，不参与健康判定。
+> `version` 取自 `APP_VERSION` 配置（未设置时用代码内置默认值，与 CHANGELOG 保持一致）。
 
 ---
 
@@ -335,6 +336,7 @@ GET /health
 | `400` | 参数写错 | 参数值不在允许范围，或 `source=local` 没配 `mode=image` | 对照 [请求参数](#请求参数) 表检查拼写 |
 | `403` | 被拒绝 | Referer 不在防盗链白名单 | 联系站长确认白名单 |
 | `404` | 分类或 API 不存在 | 分类名与 txt 文件名不一致、多分类全都不存在、external 池无此 API | 检查拼写；Debug 模式下响应会附可用列表 |
+| `405` | 方法不允许 | 用了非 GET 方法（如 POST） | 本 API 仅支持 GET / OPTIONS |
 | `429` | 请求太频繁 | 触发限流 | 放慢频率，或联系站长调整限流配置 |
 | `500` | 服务端处理失败 | 图源临时故障等 | 查看服务日志排查 |
 | `503` | 图源还没有内容 | 请求的 source 还没配置任何图片 | 页面本身是"开始使用"引导，按提示添加图片 |

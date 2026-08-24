@@ -28,7 +28,7 @@ func TestParseWhitelist(t *testing.T) {
 }
 
 // clearEnv 清空会影响 Load 的环境变量并自动恢复。
-// viper AutomaticEnv 的优先级高于 .env 文件与默认值：开发机终端里若残留
+// 环境变量的优先级高于 .env 文件与默认值：开发机终端里若残留
 // APP_PORT 等导出变量（如冒烟测试时设置过），TestLoad 会在污染环境下失败。
 // 清空后测试结果与执行环境无关。
 func clearEnv(t *testing.T) {

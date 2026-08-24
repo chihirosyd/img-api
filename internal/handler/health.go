@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"img-api/internal/config"
 	"img-api/internal/service"
 )
@@ -31,13 +29,13 @@ func NewHealthHandler(svc *service.RandomService, stats *service.Stats) *HealthH
 }
 
 // Health 处理 GET /health — 返回服务健康状态与运行时统计。
-func (h *HealthHandler) Health(c *gin.Context) {
-	h.fullHealth(c)
+func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
+	h.fullHealth(w, r)
 }
 
 // fullHealth 返回完整内部状态。
-func (h *HealthHandler) fullHealth(c *gin.Context) {
-	ctx := c.Request.Context()
+func (h *HealthHandler) fullHealth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	checks := h.svc.Health(ctx)
 
 	// 只对图源仓库的状态做健康判定（txt / local / external）。
@@ -63,7 +61,7 @@ func (h *HealthHandler) fullHealth(c *gin.Context) {
 	uptime := formatDuration(time.Since(h.startAt))
 	snapshot := h.stats.Snapshot()
 
-	c.JSON(http.StatusOK, gin.H{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  status,
 		"version": config.C.Version,
 		"uptime":  uptime,

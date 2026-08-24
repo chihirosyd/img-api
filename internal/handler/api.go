@@ -23,11 +23,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"img-api/internal/config"
 	"img-api/internal/device"
 	"img-api/internal/logger"
+	"img-api/internal/middleware"
 	"img-api/internal/model"
 	"img-api/internal/netx"
 	"img-api/internal/service"
@@ -56,32 +55,38 @@ func NewAPIHandler(rootPath string, svc *service.RandomService, stats *service.S
 //   - 浏览器地址栏直接访问 → 返回项目介绍/教程首页（含运行状态仪表盘）
 //
 // 这样根路径既是"首页"又能直接嵌图，两不误。
-func (h *APIHandler) Home(c *gin.Context) {
-	if c.Query("mode") != "" || acceptsImage(c) {
-		h.Random(c)
+func (h *APIHandler) Home(w http.ResponseWriter, r *http.Request) {
+	// Go 1.22 mux 中 "GET /" 是兜底模式，会匹配任意路径；仅根路径返回首页
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
 		return
 	}
 
-	host := c.Request.Host
+	if r.URL.Query().Get("mode") != "" || acceptsImage(r) {
+		h.Random(w, r)
+		return
+	}
+
+	host := r.Host
 	if host == "" {
 		host = "localhost:8080"
 	}
 	page := strings.ReplaceAll(homePage, "{{HOST}}", html.EscapeString(host))
-	page = strings.ReplaceAll(page, "{{STATUS}}", h.homeStatusHTML(c))
+	page = strings.ReplaceAll(page, "{{STATUS}}", h.homeStatusHTML(r))
 
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Cache-Control", "no-store")
-	c.Status(http.StatusOK)
-	_, _ = c.Writer.WriteString(page)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, page)
 }
 
 // homeStatusHTML 构建首页"运行状态"区块。
 //
 // 分类清单仅在 Debug 模式展示（与提示页策略一致）。
-func (h *APIHandler) homeStatusHTML(c *gin.Context) string {
+func (h *APIHandler) homeStatusHTML(r *http.Request) string {
 	version := html.EscapeString(config.C.Version)
 
-	checks := h.svc.Health(c.Request.Context())
+	checks := h.svc.Health(r.Context())
 	snap := h.stats.Snapshot()
 
 	var b strings.Builder
@@ -154,15 +159,15 @@ func statusBadge(status string) string {
 //	mode     — redirect（默认）/ json / image
 //	category — 分类名，逗号分隔多选（默认 "default"）
 //	api      — 外部 API 名称（source=external 时可选，空=随机选取）
-func (h *APIHandler) Random(c *gin.Context) {
+func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 	h.stats.RecordRequest()
 
-	params := parseParams(c)
+	params := parseParams(r)
 
 	// 校验参数
 	if !params.Source.Valid() {
 		h.stats.RecordFail()
-		c.JSON(http.StatusBadRequest, gin.H{
+		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":    400,
 			"message": "invalid source, must be: txt / local / external",
 		})
@@ -170,7 +175,7 @@ func (h *APIHandler) Random(c *gin.Context) {
 	}
 	if !params.Mode.Valid() {
 		h.stats.RecordFail()
-		c.JSON(http.StatusBadRequest, gin.H{
+		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":    400,
 			"message": "invalid mode, must be: redirect / json / image",
 		})
@@ -178,7 +183,7 @@ func (h *APIHandler) Random(c *gin.Context) {
 	}
 	if !params.Type.Valid() {
 		h.stats.RecordFail()
-		c.JSON(http.StatusBadRequest, gin.H{
+		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":    400,
 			"message": "invalid type, must be: auto / pc / pe",
 		})
@@ -188,7 +193,7 @@ func (h *APIHandler) Random(c *gin.Context) {
 	// 因此 local 源必须使用 mode=image（服务端直接输出）或 mode=json。
 	if params.Source == model.SourceLocal && params.Mode == model.ModeRedirect {
 		h.stats.RecordFail()
-		c.JSON(http.StatusBadRequest, gin.H{
+		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":    400,
 			"message": "local source does not support mode=redirect, use mode=image or mode=json",
 		})
@@ -197,24 +202,24 @@ func (h *APIHandler) Random(c *gin.Context) {
 	// 分类名安全校验：拒绝路径分隔符与 ..（分类仅用于拼接文件路径/Redis key）
 	if strings.ContainsAny(params.Category, `/\`) || strings.Contains(params.Category, "..") {
 		h.stats.RecordFail()
-		c.JSON(http.StatusBadRequest, gin.H{
+		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":    400,
 			"message": "invalid category: must not contain path separators or '..'",
 		})
 		return
 	}
 
-	deviceType := device.Resolve(params.Type, c.GetHeader("User-Agent"))
+	deviceType := device.Resolve(params.Type, r.Header.Get("User-Agent"))
 
 	// 委托 Service 层获取随机图片
-	ctx := c.Request.Context()
+	ctx := r.Context()
 	img, err := h.svc.Random(ctx, params.Source, params.APIName, params.Category, deviceType)
 	if err != nil {
 		h.stats.RecordFail()
 
 		// 当前请求的图源未配置 → 综合"开始使用"引导页（介绍三种方式）
 		if h.svc.SourceEmpty(params.Source) {
-			h.renderSetupGuide(c, params.Mode)
+			h.renderSetupGuide(w, r, params.Mode)
 			return
 		}
 
@@ -226,7 +231,7 @@ func (h *APIHandler) Random(c *gin.Context) {
 			if config.C.Debug {
 				available = h.svc.AvailableAPIs()
 			}
-			h.renderAPINotFound(c, apiNotFound.Name, available, params.Mode)
+			h.renderAPINotFound(w, r, apiNotFound.Name, available, params.Mode)
 			return
 		}
 
@@ -243,13 +248,13 @@ func (h *APIHandler) Random(c *gin.Context) {
 			if config.C.Debug {
 				available = h.svc.AvailableCategories(params.Source)
 			}
-			h.renderCategoryNotFound(c, params.Category, available, params.Mode)
+			h.renderCategoryNotFound(w, r, params.Category, available, params.Mode)
 			return
 		}
 
 		// 其它错误（如临时故障）→ 普通错误
 		logger.L.Error("random failed",
-			"request_id", c.GetString("request_id"),
+			"request_id", middleware.RequestIDFrom(ctx),
 			"source", params.Source,
 			"category", params.Category,
 			"device", deviceType,
@@ -259,7 +264,7 @@ func (h *APIHandler) Random(c *gin.Context) {
 		if config.C.Debug {
 			msg += ": " + err.Error()
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"code":    500,
 			"message": msg,
 		})
@@ -270,9 +275,9 @@ func (h *APIHandler) Random(c *gin.Context) {
 
 	switch params.Mode {
 	case model.ModeRedirect:
-		c.Redirect(http.StatusFound, img.URL)
+		http.Redirect(w, r, img.URL, http.StatusFound)
 	case model.ModeJSON:
-		c.JSON(http.StatusOK, model.RandomResponse{
+		writeJSON(w, http.StatusOK, model.RandomResponse{
 			Code:    200,
 			Message: "success",
 			Data:    img,
@@ -280,12 +285,12 @@ func (h *APIHandler) Random(c *gin.Context) {
 	case model.ModeImage:
 		if params.Source == model.SourceLocal {
 			// 本地文件：直接读取并输出（无需 HTTP 代理）
-			h.serveLocalFile(c, img.URL)
+			h.serveLocalFile(w, r, img.URL)
 		} else {
-			h.proxyImage(c, img.URL)
+			h.proxyImage(w, r, img.URL)
 		}
 	default:
-		c.Redirect(http.StatusFound, img.URL)
+		http.Redirect(w, r, img.URL, http.StatusFound)
 	}
 }
 
@@ -293,11 +298,11 @@ func (h *APIHandler) Random(c *gin.Context) {
 //
 // 安全：仅允许 http/https、阻止内网 IP、校验 Content-Type、50MB 上限，
 // SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
-func (h *APIHandler) proxyImage(c *gin.Context, imageURL string) {
+func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL string) {
 	// SSRF 防护：只允许 http/https
 	parsed, err := url.Parse(imageURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "invalid image URL"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "invalid image URL"})
 		return
 	}
 
@@ -306,19 +311,19 @@ func (h *APIHandler) proxyImage(c *gin.Context, imageURL string) {
 	// 避免同一次代理请求重复解析 DNS。
 	if ip := net.ParseIP(parsed.Hostname()); ip != nil && netx.IsBlockedIP(ip) {
 		logger.L.Warn("ssrf blocked: private IP", "url", imageURL)
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "invalid image URL"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "invalid image URL"})
 		return
 	}
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, imageURL, nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, imageURL, nil)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "failed to create request"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "failed to create request"})
 		return
 	}
 
 	resp, err := proxyClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "failed to fetch image"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "failed to fetch image"})
 		return
 	}
 	defer resp.Body.Close()
@@ -326,33 +331,32 @@ func (h *APIHandler) proxyImage(c *gin.Context, imageURL string) {
 	// 仅允许图片类型，降低 XSS 风险（如 text/html）
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "upstream returned non-image content"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "upstream returned non-image content"})
 		return
 	}
 
 	// 上游声明超限直接拒绝（CopyN 仍保留 50MB 硬上限兜底）
 	if resp.ContentLength > 50<<20 {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "upstream image too large (max 50MB)"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "upstream image too large (max 50MB)"})
 		return
 	}
 
-	c.Header("Content-Type", contentType)
-	c.Header("Cache-Control", "public, max-age=300")
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=300")
 	// SVG 可内嵌脚本：沙箱化，降低直接访问时脚本在 API 域名下执行的风险（XSS）
 	if strings.HasPrefix(contentType, "image/svg+xml") {
-		c.Header("Content-Security-Policy", "sandbox")
+		w.Header().Set("Content-Security-Policy", "sandbox")
 	}
 
-	c.Status(http.StatusOK)
+	w.WriteHeader(http.StatusOK)
 	// 限制最大 50MB，防 OOM。多读 1 字节探测超限：上游图超过 50MB 时直接断开连接，
 	// 避免客户端把截断的半张图误当作完整图片（Content-Length 声明超限已在前面拒绝）。
-	written, _ := io.CopyN(c.Writer, resp.Body, 50<<20+1)
+	written, _ := io.CopyN(w, resp.Body, 50<<20+1)
 	if written > 50<<20 {
 		logger.L.Warn("upstream image exceeded 50MB limit, closing connection", "url", imageURL)
-		if hj, ok := c.Writer.(http.Hijacker); ok {
-			if conn, _, hijackErr := hj.Hijack(); hijackErr == nil {
-				conn.Close()
-			}
+		// NewResponseController 会透传中间件包装（statusRecorder.Unwrap），直达底层 Hijacker
+		if conn, _, hijackErr := http.NewResponseController(w).Hijack(); hijackErr == nil {
+			conn.Close()
 		}
 		return
 	}
@@ -361,14 +365,14 @@ func (h *APIHandler) proxyImage(c *gin.Context, imageURL string) {
 // serveLocalFile 直接输出本地文件（source=local + mode=image）。
 // 安全：防路径穿越、拒绝符号链接、仅允许图片扩展名、50MB 上限，
 // SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
-func (h *APIHandler) serveLocalFile(c *gin.Context, filePath string) {
+func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, filePath string) {
 	cleanPath := filepath.Clean(filePath)
 
 	// 安全检查 0：文件必须位于项目根目录内（防绝对路径越界）
 	if rel, relErr := filepath.Rel(h.rootPath, cleanPath); relErr != nil ||
 		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		logger.L.Warn("local file outside project root blocked", "path", filePath)
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "access denied"})
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
 		return
 	}
 
@@ -377,7 +381,7 @@ func (h *APIHandler) serveLocalFile(c *gin.Context, filePath string) {
 	for _, seg := range strings.FieldsFunc(cleanPath, func(r rune) bool { return r == '/' || r == '\\' }) {
 		if seg == ".." {
 			logger.L.Warn("path traversal attempt blocked", "path", filePath)
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "access denied"})
+			writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
 			return
 		}
 	}
@@ -385,7 +389,7 @@ func (h *APIHandler) serveLocalFile(c *gin.Context, filePath string) {
 	// 安全检查 2：仅允许图片扩展名
 	ext := strings.ToLower(filepath.Ext(cleanPath))
 	if !model.ImageExts[ext] {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "unsupported local file type"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "unsupported local file type"})
 		return
 	}
 
@@ -394,7 +398,7 @@ func (h *APIHandler) serveLocalFile(c *gin.Context, filePath string) {
 	for dir := cleanPath; ; dir = filepath.Dir(dir) {
 		if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			logger.L.Warn("symlink blocked", "path", dir)
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "access denied"})
+			writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
 			return
 		}
 		if dir == h.rootPath {
@@ -408,32 +412,32 @@ func (h *APIHandler) serveLocalFile(c *gin.Context, filePath string) {
 	f, err := os.Open(cleanPath)
 	if err != nil {
 		logger.L.Warn("local file open failed", "path", cleanPath, "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "local file not found"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "local file not found"})
 		return
 	}
 	defer f.Close()
 
 	// 超限文件直接拒绝（CopyN 仍保留 50MB 硬上限兜底）
 	if fi, err := f.Stat(); err == nil && fi.Size() > 50<<20 {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "local image too large (max 50MB)"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "local image too large (max 50MB)"})
 		return
 	}
 
 	// 根据扩展名推断标准 Content-Type（如 .jpg → image/jpeg）
 	contentType := model.ImageMimeTypes[ext]
 	if contentType == "" {
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "unsupported local file type"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "unsupported local file type"})
 		return
 	}
-	c.Header("Content-Type", contentType)
-	c.Header("Cache-Control", "public, max-age=300")
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=300")
 	// SVG 可内嵌脚本：沙箱化，降低直接访问时脚本在 API 域名下执行的风险（XSS）
 	if ext == ".svg" {
-		c.Header("Content-Security-Policy", "sandbox")
+		w.Header().Set("Content-Security-Policy", "sandbox")
 	}
 
-	c.Status(http.StatusOK)
-	_, _ = io.CopyN(c.Writer, f, 50<<20)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.CopyN(w, f, 50<<20)
 }
 
 // renderSetupGuide 返回"开始使用"引导页。
@@ -445,9 +449,9 @@ func (h *APIHandler) serveLocalFile(c *gin.Context, filePath string) {
 //   - mode=json         → JSON
 //   - 图片请求（Accept 含 image/ 或 mode=image）→ SVG 占位图（博客 <img> 嵌入也能看到提示）
 //   - 其它              → HTML 引导页
-func (h *APIHandler) renderSetupGuide(c *gin.Context, mode model.Mode) {
+func (h *APIHandler) renderSetupGuide(w http.ResponseWriter, r *http.Request, mode model.Mode) {
 	if mode == model.ModeJSON {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"code":    503,
 			"message": "img-api is not configured yet",
 			"hint":    "add images via one of the three sources: txt, local, or external (see docs/CONFIG.md)",
@@ -455,45 +459,45 @@ func (h *APIHandler) renderSetupGuide(c *gin.Context, mode model.Mode) {
 		return
 	}
 
-	if mode == model.ModeImage || acceptsImage(c) {
-		h.writePlaceholderSVG(c, "图片源未配置", []string{
+	if mode == model.ModeImage || acceptsImage(r) {
+		h.writePlaceholderSVG(w, r, "图片源未配置", []string{
 			"img-api 服务已运行，但当前图源还没有图片",
 			"请联系站长配置图源后重试",
 		})
 		return
 	}
 
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Cache-Control", "no-store")
-	c.Status(http.StatusServiceUnavailable)
-	_, _ = c.Writer.WriteString(setupGuidePage)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = io.WriteString(w, setupGuidePage)
 }
 
 // renderCategoryNotFound 返回"分类不存在"的提示页。
 //
 // 图源有内容，但请求的 category 参数在渠道中不存在时触发。
 // available 仅在 Debug 模式由调用方传入（生产环境不暴露分类清单）。
-func (h *APIHandler) renderCategoryNotFound(c *gin.Context, category string, available []string, mode model.Mode) {
+func (h *APIHandler) renderCategoryNotFound(w http.ResponseWriter, r *http.Request, category string, available []string, mode model.Mode) {
 	if mode == model.ModeJSON {
-		resp := gin.H{
+		resp := map[string]any{
 			"code":    404,
 			"message": "category not found: " + category,
 		}
 		if len(available) > 0 {
 			resp["available"] = available
 		}
-		c.JSON(http.StatusNotFound, resp)
+		writeJSON(w, http.StatusNotFound, resp)
 		return
 	}
 
-	if mode == model.ModeImage || acceptsImage(c) {
+	if mode == model.ModeImage || acceptsImage(r) {
 		lines := []string{fmt.Sprintf("你请求的分类 %q 不存在", category)}
 		if len(available) > 0 {
 			lines = append(lines, "可用分类："+strings.Join(available, "、"))
 		} else {
 			lines = append(lines, "请联系站长获取正确的分类名")
 		}
-		h.writePlaceholderSVG(c, "分类不存在", lines)
+		h.writePlaceholderSVG(w, r, "分类不存在", lines)
 		return
 	}
 
@@ -513,10 +517,10 @@ func (h *APIHandler) renderCategoryNotFound(c *gin.Context, category string, ava
 	page := strings.ReplaceAll(categoryNotFoundPage, "{{CATEGORY}}", html.EscapeString(category))
 	page = strings.ReplaceAll(page, "{{AVAILABLE}}", listHTML.String())
 
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Cache-Control", "no-store")
-	c.Status(http.StatusNotFound)
-	_, _ = c.Writer.WriteString(page)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = io.WriteString(w, page)
 }
 
 // renderAPINotFound 返回"指定的外部 API 不存在"提示页。
@@ -524,27 +528,27 @@ func (h *APIHandler) renderCategoryNotFound(c *gin.Context, category string, ava
 // 触发条件：source=external 且 api 参数指定的名称在 image.yaml 池中不存在。
 // 属于配置错误而非上游故障，因此返回 404 提示而非 500。
 // available 仅在 Debug 模式由调用方传入（生产环境不暴露 API 清单）。
-func (h *APIHandler) renderAPINotFound(c *gin.Context, apiName string, available []string, mode model.Mode) {
+func (h *APIHandler) renderAPINotFound(w http.ResponseWriter, r *http.Request, apiName string, available []string, mode model.Mode) {
 	if mode == model.ModeJSON {
-		resp := gin.H{
+		resp := map[string]any{
 			"code":    404,
 			"message": "external api not found: " + apiName,
 		}
 		if len(available) > 0 {
 			resp["available"] = available
 		}
-		c.JSON(http.StatusNotFound, resp)
+		writeJSON(w, http.StatusNotFound, resp)
 		return
 	}
 
-	if mode == model.ModeImage || acceptsImage(c) {
+	if mode == model.ModeImage || acceptsImage(r) {
 		lines := []string{fmt.Sprintf("你指定的 API %q 不存在", apiName)}
 		if len(available) > 0 {
 			lines = append(lines, "可用 API："+strings.Join(available, "、"))
 		} else {
 			lines = append(lines, "请检查 config/image.yaml 中的 name 字段")
 		}
-		h.writePlaceholderSVG(c, "API 不存在", lines)
+		h.writePlaceholderSVG(w, r, "API 不存在", lines)
 		return
 	}
 
@@ -564,10 +568,10 @@ func (h *APIHandler) renderAPINotFound(c *gin.Context, apiName string, available
 	page := strings.ReplaceAll(apiNotFoundPage, "{{API}}", html.EscapeString(apiName))
 	page = strings.ReplaceAll(page, "{{AVAILABLE}}", listHTML.String())
 
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Cache-Control", "no-store")
-	c.Status(http.StatusNotFound)
-	_, _ = c.Writer.WriteString(page)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = io.WriteString(w, page)
 }
 
 // acceptsImage 判断客户端是否期望图片响应（如浏览器 <img> 标签嵌入场景）。
@@ -575,8 +579,8 @@ func (h *APIHandler) renderAPINotFound(c *gin.Context, apiName string, available
 // 判据：Accept 以 "image/" 开头。不能只用 Contains("image/")：现代浏览器
 // 地址栏导航的 Accept 也含 image/avif、image/webp 等条目（以 text/html 开头），
 // 用 Contains 会把导航请求误判为图片请求，导致 / 首页与错误提示页返回 SVG 而非 HTML。
-func acceptsImage(c *gin.Context) bool {
-	return strings.HasPrefix(strings.TrimSpace(c.GetHeader("Accept")), "image/")
+func acceptsImage(r *http.Request) bool {
+	return strings.HasPrefix(strings.TrimSpace(r.Header.Get("Accept")), "image/")
 }
 
 // writePlaceholderSVG 输出一张内嵌文字的 SVG 占位图。
@@ -586,7 +590,7 @@ func acceptsImage(c *gin.Context) bool {
 //
 // ⚠️ 状态码固定为 200：浏览器对 <img> 标签的非 2xx 响应不渲染 body（显示裂图），
 // 因此虽然语义上是"未配置"，也必须用 200 才能让提示图正常显示。
-func (h *APIHandler) writePlaceholderSVG(c *gin.Context, title string, lines []string) {
+func (h *APIHandler) writePlaceholderSVG(w http.ResponseWriter, r *http.Request, title string, lines []string) {
 	var b strings.Builder
 	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">`)
 	b.WriteString(`<rect width="800" height="400" fill="#f6f7f9"/>`)
@@ -606,33 +610,34 @@ func (h *APIHandler) writePlaceholderSVG(c *gin.Context, title string, lines []s
 
 	b.WriteString(`</svg>`)
 
-	c.Header("Content-Type", "image/svg+xml; charset=utf-8")
-	c.Header("Cache-Control", "no-store")
-	c.Status(http.StatusOK)
-	_, _ = c.Writer.WriteString(b.String())
+	w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, b.String())
 }
 
 // parseParams 从 HTTP query string 中提取并组装 RandomParams。
 // 缺失参数使用 DefaultRandomParams() 的默认值。
-func parseParams(c *gin.Context) model.RandomParams {
+func parseParams(r *http.Request) model.RandomParams {
 	params := model.DefaultRandomParams()
+	q := r.URL.Query()
 
-	if v := c.Query("type"); v != "" {
+	if v := q.Get("type"); v != "" {
 		params.Type = model.DeviceType(strings.ToLower(strings.TrimSpace(v)))
 	}
-	if v := c.Query("source"); v != "" {
+	if v := q.Get("source"); v != "" {
 		params.Source = model.SourceType(strings.ToLower(strings.TrimSpace(v)))
 	} else {
 		// 使用配置的默认来源
 		params.Source = model.SourceType(strings.ToLower(strings.TrimSpace(config.C.DefaultSource)))
 	}
-	if v := c.Query("mode"); v != "" {
+	if v := q.Get("mode"); v != "" {
 		params.Mode = model.Mode(strings.ToLower(strings.TrimSpace(v)))
 	}
-	if v := c.Query("category"); v != "" {
+	if v := q.Get("category"); v != "" {
 		params.Category = v
 	}
-	if v := c.Query("api"); v != "" {
+	if v := q.Get("api"); v != "" {
 		params.APIName = v
 	}
 

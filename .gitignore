@@ -6,6 +6,8 @@ config/.env
 # ── 编译产物 ──
 /img-api
 /img-api.exe
+/img-api-gui
+/img-api-gui.exe
 /server
 /server.exe
 /health-check
@@ -26,6 +28,8 @@ config/.env
 *.test
 # pprof 性能采样
 *.prof
+# scripts/check-all.bat 检查报告
+/check-report.txt
 
 # ── 日志 & 运行时文件 ──
 storage/logs/*

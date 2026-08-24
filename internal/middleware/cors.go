@@ -1,15 +1,7 @@
-// Package middleware 提供 Gin 框架的 HTTP 中间件。
-//
-// 中间件执行顺序（main.go 中注册的顺序）：
-//   Recovery → RequestID → AccessLog → CORS → RateLimiter → Referer → Handler
-//
-// 每个中间件职责单一，可独立启用/禁用。
 package middleware
 
 import (
 	"net/http"
-
-	"github.com/gin-gonic/gin"
 
 	"img-api/internal/config"
 )
@@ -21,41 +13,47 @@ import (
 //
 // 当 CORS_ENABLED=false 时直接跳过跨域头（如前方已有 Nginx 处理 CORS），
 // 但安全响应头仍会添加。
-func CORS() gin.HandlerFunc {
+func CORS() Middleware {
 	if !config.C.CorsEnabled {
-		return func(c *gin.Context) {
-			addSecurityHeaders(c)
-			// CORS 关闭时也优雅处理预检请求，避免 OPTIONS 落到业务路由返回 404
-			if c.Request.Method == http.MethodOptions {
-				c.AbortWithStatus(http.StatusNoContent)
-				return
-			}
-			c.Next()
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				addSecurityHeaders(w)
+				// CORS 关闭时也优雅处理预检请求，避免 OPTIONS 落到业务路由返回 404
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				next.ServeHTTP(w, r)
+			})
 		}
 	}
-	return func(c *gin.Context) {
-		// CORS 头
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
-		c.Header("Access-Control-Max-Age", "86400")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// CORS 头
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", "*")
+			h.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+			h.Set("Access-Control-Max-Age", "86400")
 
-		// 安全响应头
-		addSecurityHeaders(c)
+			// 安全响应头
+			addSecurityHeaders(w)
 
-		// 预检请求直接返回 204
-		if c.Request.Method == http.MethodOptions {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
+			// 预检请求直接返回 204
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 
-		c.Next()
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
 // addSecurityHeaders 添加安全相关的 HTTP 响应头。
-func addSecurityHeaders(c *gin.Context) {
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("X-Frame-Options", "DENY")
-	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+func addSecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 }

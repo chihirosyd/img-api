@@ -5,8 +5,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"img-api/internal/config"
 	"img-api/internal/logger"
 )
@@ -19,39 +17,36 @@ import (
 //   - Referer 不在白名单中 → 返回 403
 //
 // 白名单配置在 REFERER_WHITELIST，逗号分隔（如 "mysite.com,blog.mysite.com"）。
-func Referer() gin.HandlerFunc {
+func Referer() Middleware {
 	whitelist := config.C.RefererWhitelist
+	// 拦截日志的 IP 与访问日志/限流器同源：仅信任 TRUSTED_PROXIES 网段的转发头。
+	trusted := parseTrustedProxies(config.C.TrustedProxies)
 
 	// 白名单为空 → 不启用防盗链
 	if len(whitelist) == 0 {
-		return func(c *gin.Context) { c.Next() }
+		return func(next http.Handler) http.Handler { return next }
 	}
 
-	return func(c *gin.Context) {
-		referer := c.GetHeader("Referer")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			referer := r.Header.Get("Referer")
 
-		// 空 Referer 放行（如直接访问、curl 请求）
-		if referer == "" {
-			c.Next()
-			return
-		}
+			// 空 Referer 放行（如直接访问、curl 请求）
+			if referer == "" || isAllowed(referer, whitelist) {
+				next.ServeHTTP(w, r)
+				return
+			}
 
-		// 检查是否在白名单中
-		if isAllowed(referer, whitelist) {
-			c.Next()
-			return
-		}
+			logger.L.Warn("referer blocked",
+				"referer", referer,
+				"ip", realClientIP(r, trusted),
+			)
 
-		logger.L.Warn("referer blocked",
-			"referer", referer,
-			"ip", c.ClientIP(),
-		)
-
-		c.JSON(http.StatusForbidden, gin.H{
-			"code":    403,
-			"message": "access denied: referer not allowed",
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"code":    403,
+				"message": "access denied: referer not allowed",
+			})
 		})
-		c.Abort()
 	}
 }
 

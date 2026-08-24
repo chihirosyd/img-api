@@ -7,8 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"img-api/internal/config"
 	"img-api/internal/logger"
 )
@@ -22,9 +20,9 @@ import (
 // 限制：
 //   - 进程重启后计数清零
 //   - 多实例部署时各自独立计数（需替换为 Redis 方案）
-func RateLimiter() gin.HandlerFunc {
+func RateLimiter() Middleware {
 	if !config.C.RateLimitEnabled {
-		return func(c *gin.Context) { c.Next() }
+		return func(next http.Handler) http.Handler { return next }
 	}
 
 	limiter := &slidingWindowLimiter{
@@ -37,20 +35,21 @@ func RateLimiter() gin.HandlerFunc {
 	// 后台定期清理过期 IP 记录
 	go limiter.cleanup(5 * time.Minute)
 
-	return func(c *gin.Context) {
-		ip := realClientIP(c, limiter.trustedProxies)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := realClientIP(r, limiter.trustedProxies)
 
-		if !limiter.allow(ip) {
-			logger.L.Warn("rate limit exceeded", "ip", ip)
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"code":    429,
-				"message": "too many requests, please try again later",
-			})
-			c.Abort()
-			return
-		}
+			if !limiter.allow(ip) {
+				logger.L.Warn("rate limit exceeded", "ip", ip)
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"code":    429,
+					"message": "too many requests, please try again later",
+				})
+				return
+			}
 
-		c.Next()
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
@@ -131,11 +130,11 @@ func (l *slidingWindowLimiter) cleanup(interval time.Duration) {
 // 安全策略：只有当请求直接来自 TRUSTED_PROXIES 配置的网段时，
 // 才信任 X-Forwarded-For / X-Real-IP 头；否则一律使用 TCP 对端地址。
 // 否则攻击者可随意伪造 XFF 头绕过限流。
-func realClientIP(c *gin.Context, trusted []*net.IPNet) string {
-	remoteIP := parseRemoteAddr(c.Request.RemoteAddr)
+func realClientIP(r *http.Request, trusted []*net.IPNet) string {
+	remoteIP := parseRemoteAddr(r.RemoteAddr)
 	if remoteIP == nil {
 		// 解析失败时的最后兜底（RemoteAddr 异常时极少发生）
-		return c.ClientIP()
+		return r.RemoteAddr
 	}
 
 	// 对端是否可信代理？
@@ -151,14 +150,14 @@ func realClientIP(c *gin.Context, trusted []*net.IPNet) string {
 	}
 
 	// 可信代理来源：X-Forwarded-For 第一段为客户真实 IP
-	if fwd := c.GetHeader("X-Forwarded-For"); fwd != "" {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		// X-Forwarded-For 格式: "client, proxy1, proxy2"
 		if idx := strings.IndexByte(fwd, ','); idx > 0 {
 			return strings.TrimSpace(fwd[:idx])
 		}
 		return strings.TrimSpace(fwd)
 	}
-	if real := c.GetHeader("X-Real-IP"); real != "" {
+	if real := r.Header.Get("X-Real-IP"); real != "" {
 		return strings.TrimSpace(real)
 	}
 	return remoteIP.String()

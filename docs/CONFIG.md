@@ -30,7 +30,7 @@
 | `RATE_LIMIT_ENABLED` | bool | `true` | 是否开启 IP 限流 |
 | `RATE_LIMIT_MAX` | int | `60` | 每分钟每 IP 最大请求数 |
 | `REFERER_WHITELIST` | string | — | 防盗链域名白名单，逗号分隔（如 `mysite.com,blog.mysite.com`）。空 Referer 默认放行 |
-| `TRUSTED_PROXIES` | string | — | 可信反代网段（逗号分隔 CIDR，如 `172.17.0.0/16`）。仅当请求来自这些网段时限流器才信任 `X-Forwarded-For`/`X-Real-IP`；留空 = 直接按对端 IP 限流（防伪造） |
+| `TRUSTED_PROXIES` | string | — | 可信反代网段（逗号分隔 CIDR，如 `172.17.0.0/16`）。仅当请求来自这些网段时，限流器与访问日志才信任 `X-Forwarded-For`/`X-Real-IP`；留空 = 一律按 TCP 对端 IP（防伪造） |
 | `CORS_ENABLED` | bool | `true` | 是否添加 CORS 头（Nginx 反代时可关闭） |
 
 ---
@@ -90,6 +90,8 @@
 
 编辑 `config/image.yaml` 配置。每项支持以下字段：
 
+> 💡 键名**大小写不敏感**（`external_apis` 与 `EXTERNAL_APIS` 等价），推荐与下表一致地全小写。
+
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|:--:|------|
 | `name` | string | 是 | API 标识（`?api=xxx` 匹配此值） |
@@ -97,7 +99,7 @@
 | `response_type` | string | — | `redirect`（默认）/ `json` |
 | `url_field` | string | — | JSON 模式时提取 URL 的字段路径（如 `urls.raw`） |
 | `categories` | []string | — | 支持的分类列表，空=匹配所有 |
-| `default_category` | []string | — | 默认分类（多值随机选一）；空=无分类 |
+| `default_category` | []string | — | 默认分类（多值随机选一）；空=回退 `default` |
 | `category_param` | string | — | 分类对应的 query 参数名（如 `query`） |
 | `headers` | map | — | 自定义请求头（如 `Authorization`） |
 
@@ -148,7 +150,7 @@ HALF_OPEN ──任一失败──→ OPEN
 
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `APP_VERSION` | string | `1.0.0` | 语义版本号，影响 `/health` 返回 |
+| `APP_VERSION` | string | `1.3.0` | 语义版本号，影响 `/health` 返回与首页显示；由 `cmd/setversion` 随 CHANGELOG 自动同步 |
 
 ---
 

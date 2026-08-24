@@ -38,6 +38,34 @@ const homePage = `<!DOCTYPE html>
   .tip { background: #eef6ff; border-left: 4px solid #2f81f7; border-radius: 6px;
          padding: 10px 14px; font-size: 13px; margin-top: 24px; }
 
+  /* Hero 与链接按钮 */
+  .hero { display: flex; align-items: flex-start; justify-content: space-between;
+          flex-wrap: wrap; gap: 10px; }
+  .btn { display: inline-block; text-decoration: none; font-size: 13px; font-weight: 500;
+         color: #2f81f7; border: 1px solid #2f81f7; border-radius: 999px;
+         padding: 6px 16px; transition: all .15s ease; white-space: nowrap; }
+  .btn:hover { background: #2f81f7; color: #fff; }
+
+  /* 三步上手卡片 */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 2px; }
+  .step { background: #f8fafc; border: 1px solid #edf0f5; border-radius: 10px; padding: 12px; }
+  .step .num { display: inline-flex; width: 22px; height: 22px; border-radius: 50%;
+               background: #2f81f7; color: #fff; font-size: 13px; font-weight: 600;
+               align-items: center; justify-content: center; margin-right: 6px; }
+  .step .t { font-size: 14px; font-weight: 600; color: #1f2937; }
+  .step p { font-size: 12.5px; margin: 6px 0 0; color: #5b6472; line-height: 1.7; }
+
+  /* 参数表格 */
+  .params-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 2px; }
+  .params-table td { padding: 6px 8px; border-bottom: 1px solid #f0f2f6; vertical-align: top; }
+  .params-table td:first-child { width: 110px; white-space: nowrap; }
+
+  /* 页脚 */
+  .footer { margin-top: 26px; padding-top: 14px; border-top: 1px solid #eef1f4;
+            font-size: 12.5px; color: #8a94a6; display: flex; flex-wrap: wrap; gap: 12px; }
+  .footer a { color: #2f81f7; text-decoration: none; }
+  .footer a:hover { text-decoration: underline; }
+
   /* 运行状态 */
   .status-line { font-size: 15px; font-weight: 600; color: #1f2937; margin: 2px 0 4px; }
   .status-line .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
@@ -65,14 +93,15 @@ const homePage = `<!DOCTYPE html>
   @media (prefers-color-scheme: dark) {
     body { background: #0f1115; }
     .card { background: #171a21; border-color: #262b36; }
-    h1, h2, .status-line, .stat-card .num { color: #e6e8ec; }
+    h1, h2, .status-line, .stat-card .num, .step .t { color: #e6e8ec; }
     p, .sub, td { color: #a7adb8; }
     code { background: #262b36; color: #7db3ff; }
-    .status-table td { border-color: #262b36; }
-    .stat-card { background: #1d222c; border-color: #262b36; }
-    .stat-card .label, .status-table td:first-child { color: #6d7686; }
+    .status-table td, .params-table td, .footer { border-color: #262b36; }
+    .stat-card, .step { background: #1d222c; border-color: #262b36; }
+    .stat-card .label, .status-table td:first-child, .step p { color: #6d7686; }
     .tip { background: #131c2e; }
     .badge.gray { background: #262b36; color: #a7adb8; }
+    .footer { color: #6d7686; }
   }
 
   /* 移动端 */
@@ -80,35 +109,52 @@ const homePage = `<!DOCTYPE html>
     .card { padding: 28px 22px; }
     .card::before { margin: -28px -22px 20px; }
     .stat-grid { grid-template-columns: repeat(2, 1fr); }
+    .steps { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>🎲 img-api 随机图片 API</h1>
-  <p class="sub">服务运行中。把图片地址嵌入博客，每次访问随机返回一张图片。</p>
+  <div class="hero">
+    <div>
+      <h1>🎲 img-api 随机图片 API</h1>
+      <p class="sub">把图片地址嵌入博客，每次访问随机返回一张图片。</p>
+    </div>
+    <a class="btn" href="https://github.com/chihirosyd/img-api" target="_blank" rel="noopener">GitHub 仓库 ↗</a>
+  </div>
 
   <h2>运行状态</h2>
   {{STATUS}}
 
   <h2>三步上手</h2>
-  <p>1️⃣ 打开 <code>http://{{HOST}}/random</code>，浏览器会直接跳转到一张随机图片</p>
-  <p>2️⃣ 博客/网页嵌入：</p>
-  <pre><code>&lt;img src="http://{{HOST}}/random" alt="随机图片"&gt;</code></pre>
-  <p>3️⃣ 指定分类（分类名 = 图库 txt 文件名）：</p>
-  <pre><code>http://{{HOST}}/random?category=风景</code></pre>
+  <div class="steps">
+    <div class="step"><span class="num">1</span><span class="t">打开随机图</span>
+      <p><code>http://{{HOST}}/random</code>，浏览器直接跳转到一张随机图片</p>
+    </div>
+    <div class="step"><span class="num">2</span><span class="t">嵌入博客</span>
+      <p><code>&lt;img src="http://{{HOST}}/random"&gt;</code></p>
+    </div>
+    <div class="step"><span class="num">3</span><span class="t">指定分类</span>
+      <p>分类名 = 图库 txt 文件名，如 <code>?category=风景</code></p>
+    </div>
+  </div>
 
   <h2>常用参数</h2>
-  <pre><code>type    auto / pc / pe            设备类型（手机竖屏用 pe）
-source  txt / local / external    图片来源
-mode    redirect / json / image   返回模式
-category 分类名                   逗号多选，如 anime,scenery</code></pre>
-
-  <h2>完整文档</h2>
-  <p>详见仓库 <code>docs/API.md</code>（参数详解、响应格式、状态码速查）。</p>
+  <table class="params-table">
+    <tr><td><code>type</code></td><td>auto / pc / pe — 设备类型（手机竖屏用 pe）</td></tr>
+    <tr><td><code>source</code></td><td>txt / local / external — 图片来源</td></tr>
+    <tr><td><code>mode</code></td><td>redirect / json / image — 返回模式</td></tr>
+    <tr><td><code>category</code></td><td>分类名，逗号多选，如 anime,scenery</td></tr>
+  </table>
 
   <div class="tip">💡 图源还没有图片时，访问 /random 会显示"开始使用"引导页，
        按提示添加图片即可。</div>
+
+  <div class="footer">
+    <span>img-api · 完整文档见仓库 docs/API.md</span>
+    <a href="https://github.com/chihirosyd/img-api" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/chihirosyd/img-api/blob/main/CHANGELOG.md" target="_blank" rel="noopener">更新日志</a>
+  </div>
 </div>
 </body>
 </html>`

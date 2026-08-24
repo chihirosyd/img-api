@@ -6,7 +6,8 @@
 
 ```bash
 # 1. 从 GitHub Releases 下载对应平台的 zip 包
-# （内含 4 个二进制 + .env.example + config/ + resources/ 骨架目录 + docs/）
+# （内含二进制程序 + .env.example + config/ + resources/ 骨架目录 + docs/）
+# （Windows 版另含图形控制面板 img-api-gui.exe）
 wget https://github.com/chihirosyd/img-api/releases/latest/download/img-api-linux-amd64.zip
 unzip img-api-linux-amd64.zip
 cd img-api
@@ -78,6 +79,18 @@ systemctl restart img-api         # 修改 .env 后重启
 
 ### Windows
 
+**方式一：图形控制面板（推荐小白用户）**
+
+```powershell
+# 双击 img-api-gui.exe 打开控制面板：
+#   - 启动 / 停止 / 重启服务
+#   - 编辑核心设置（保存后自动重启生效）
+#   - 开机自启（当前用户级，无需管理员）
+#   - 后台运行（关闭窗口时最小化到托盘，服务继续运行）
+```
+
+**方式二：命令行（服务器/脚本场景）**
+
 ```powershell
 # 1. 从 GitHub Releases 下载 img-api-windows-amd64.zip
 # 2. 解压到目录（如 D:\img-api），exe 必须与 .env、config/、resources/ 同目录
@@ -86,12 +99,14 @@ cd D:\img-api
 # 3. 复制配置模板（可选，不改则使用默认配置）
 copy .env.example .env
 
-# 4. 双击 img-api.exe 运行（弹出控制台窗口显示日志，关闭窗口即停止）
-# 或命令行运行：
+# 4. 双击 img-api.exe 运行：控制台窗口显示友好启动横幅，
+#    并自动打开默认浏览器到教程首页（含运行状态仪表盘），
+#    即可直观确认服务是否正常；关闭控制台窗口即停止服务
+#    不想自动打开浏览器：设置环境变量 IMG_API_OPEN_BROWSER=0 后运行
 .\img-api.exe
 
-# 5. 浏览器验证
-start http://localhost:8080/random
+# 5. 浏览器验证（若未自动打开，手动访问）
+start http://localhost:8080/
 ```
 
 > 📁 图库编辑方式与其他平台一致：改 `resources\txt\pc\default.txt` 即时生效，
@@ -160,7 +175,9 @@ docker compose restart
 > `resources/txt/{pc,pe}/default.txt`、`resources/local/{pc,pe}/default/` 目录，直接编辑即可。
 > 图库文件直接放在宿主机对应目录即可（如 `resources/txt/pc/default.txt`），
 > 外部 API 池直接编辑自动生成的 `config/image.yaml`（含 picsum / flickr / unsplash 注释模板）。
-> 旧版本升级：老部署的 `configs/image.yaml` 会在下次启动时自动复制迁移到 `config/image.yaml`。
+> 旧版本升级：仅当沿用旧版 compose 的 `./configs` 挂载时，`configs/image.yaml`
+> 才会在下次启动时自动复制迁移到 `config/image.yaml`；已按新版 compose 升级的用户
+> 需手动 `cp configs/image.yaml config/image.yaml`。
 > 镜像更新：`docker compose pull && docker compose up -d`。
 
 > 🛠️ 开发者如需从源码构建：在 `docker-compose.yml` 中注释掉 `image:` 行、
@@ -293,11 +310,16 @@ Windows：下载新 zip 覆盖解压到原目录（保留 `.env` 与图库），
 推送 tag 自动编译 5 平台二进制并发布 Release：
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+# 1. 更新 CHANGELOG.md（[未发布] 段改名为 ## [x.y.z] - 日期）
+# 2. 同步版本号到 config.go 默认值与 .env.example（唯一来源是 CHANGELOG）
+go run ./cmd/setversion
+# 3. 提交并打 tag 触发发布
+git add -A && git commit -m "release v1.4.0"
+git tag v1.4.0
+git push origin main v1.4.0
 ```
 
-产物（每个平台一个 zip，内含 4 个二进制：主程序 + 配套工具）：
+产物（每个平台一个 zip：Linux/macOS 含 4 个二进制，Windows 另含图形控制面板）：
 - `img-api-linux-amd64.zip`
 - `img-api-linux-arm64.zip`
 - `img-api-windows-amd64.zip`
@@ -305,7 +327,8 @@ git push origin v1.0.0
 - `img-api-darwin-arm64.zip`
 
 zip 内容：
-- `img-api`（Windows 为 `img-api.exe`）：主程序
+- `img-api`（Windows 为 `img-api.exe`）：主程序（命令行）
+- `img-api-gui.exe`（仅 Windows）：图形控制面板（启动/停止/设置/自启/托盘后台）
 - `health-check`：健康检查 CLI
 - `build-index`：手动重建本地图片索引
 - `sync-redis`：TXT → Redis 同步

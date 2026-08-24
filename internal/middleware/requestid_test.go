@@ -6,19 +6,19 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestRequestID(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	router.Use(RequestID())
-	router.GET("/", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+	router := http.NewServeMux()
+	router.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	wrapped := RequestID()(router)
 
 	// 无客户端 ID → 自动生成 16 位十六进制
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	wrapped.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rid := w.Header().Get("X-Request-ID"); len(rid) != 16 {
 		t.Fatalf("generated id = %q, want 16 chars", rid)
 	}
@@ -27,7 +27,7 @@ func TestRequestID(t *testing.T) {
 	w = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Request-ID", "trace-123")
-	router.ServeHTTP(w, req)
+	wrapped.ServeHTTP(w, req)
 	if got := w.Header().Get("X-Request-ID"); got != "trace-123" {
 		t.Fatalf("client id not reused: %q", got)
 	}
@@ -36,7 +36,7 @@ func TestRequestID(t *testing.T) {
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Request-ID", strings.Repeat("中", 100))
-	router.ServeHTTP(w, req)
+	wrapped.ServeHTTP(w, req)
 	got := w.Header().Get("X-Request-ID")
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncated id is not valid utf-8: %q", got)

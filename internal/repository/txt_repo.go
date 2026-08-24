@@ -21,7 +21,7 @@ import (
 // 目录约定：resources/txt/{pc|pe}/{category}.txt
 // TXT 格式：每行一个 URL，# 开头为注释，空行自动跳过。
 //
-// 两级读取策略（匹配 PHP 版本的 Redis + 文件降级）：
+// 两级读取策略（Redis + 文件降级）：
 //  1. 优先 Redis Set → SRandMember O(1) 随机
 //  2. Redis 未命中 → 从 TXT 文件读取（带 mtime 校验的内存缓存，
 //     避免每个请求全量重读文件；管理员修改文件后即时生效）

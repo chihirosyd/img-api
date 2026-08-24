@@ -11,24 +11,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/viper"
-
+	"img-api/internal/config"
 	"img-api/internal/logger"
 	"img-api/internal/model"
 	"img-api/internal/netx"
 )
 
-// ExternalAPIConfig 描述一个外部图片 API 端点（从 image.yaml 反序列化）。
-type ExternalAPIConfig struct {
-	Name            string            `mapstructure:"name"`             // API 标识
-	URL             string            `mapstructure:"url"`              // 请求模板（{width}/{height}/{category} 占位符）
-	Headers         map[string]string `mapstructure:"headers"`          // 自定义请求头
-	ResponseType    string            `mapstructure:"response_type"`    // redirect / json
-	URLField        string            `mapstructure:"url_field"`        // JSON 中 URL 字段路径
-	Categories      []string          `mapstructure:"categories"`       // 支持的分类（空=匹配所有，["all"]=匹配所有）
-	CategoryParam   string            `mapstructure:"category_param"`   // 分类对应的 query 参数名（如 "query"）
-	DefaultCategory []string          `mapstructure:"default_category"` // 默认分类（多值随机选一；空=回退 "default"）
-}
+// ExternalAPIConfig 是 config.ExternalAPIConfig 的别名（类型定义上移到 config 包），
+// 保持本包既有引用不变。
+type ExternalAPIConfig = config.ExternalAPIConfig
 
 // ExternalPool 管理一组外部图片 API 端点。
 //
@@ -55,21 +46,17 @@ func (p *ExternalPool) FindByName(name string) (*ExternalAPIConfig, bool) {
 	return nil, false
 }
 
-// LoadExternalPool 从 Viper 配置中解析 image.yaml。
+// LoadExternalPool 使用已解析的 image.yaml 配置（config.Image）构建外部 API 池。
 //
 // 如果没有配置任何外部 API，返回一个空池（不报错）。
 // 此时 source=external 的请求会得到 ErrExternalNotConfigured，
 // 由 Handler 层返回"开始使用"引导页。
-func LoadExternalPool(v *viper.Viper) (*ExternalPool, error) {
-	var config struct {
-		ExternalAPIs []ExternalAPIConfig `mapstructure:"external_apis"`
+func LoadExternalPool(imgCfg *config.ImageConfig) (*ExternalPool, error) {
+	if imgCfg == nil {
+		imgCfg = &config.ImageConfig{}
 	}
 
-	if err := v.Unmarshal(&config); err != nil {
-		return nil, fmt.Errorf("parse image.yaml: %w", err)
-	}
-
-	if len(config.ExternalAPIs) == 0 {
+	if len(imgCfg.ExternalAPIs) == 0 {
 		// 返回空池：source=external 请求将返回"开始使用"引导页
 		logger.L.Warn("no external APIs configured, source=external will return a setup hint page")
 		return &ExternalPool{
@@ -78,9 +65,9 @@ func LoadExternalPool(v *viper.Viper) (*ExternalPool, error) {
 		}, nil
 	}
 
-	logger.L.Info("external API pool loaded", "count", len(config.ExternalAPIs))
+	logger.L.Info("external API pool loaded", "count", len(imgCfg.ExternalAPIs))
 	return &ExternalPool{
-		apis:   config.ExternalAPIs,
+		apis:   imgCfg.ExternalAPIs,
 		client: netx.NewClient(10 * time.Second),
 	}, nil
 }

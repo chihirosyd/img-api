@@ -2,7 +2,25 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
-## [未发布]
+## [1.4.0] - 2026-08-24
+
+### 新增
+
+- **Windows 图形控制面板**（`img-api-gui.exe`）：启动/停止/重启服务、核心设置编辑（保存后自动重启）、开机自启（当前用户级注册表）、后台运行（关闭窗口最小化到托盘）；命令行版 `img-api.exe` 完全不变
+- Windows 双击命令行版自动打开浏览器到教程首页，控制台打印友好启动横幅（`IMG_API_OPEN_BROWSER=0` 可关闭）
+- 首页美化：hero 区 + GitHub 仓库按钮、三步上手卡片化、常用参数表格化、页脚（GitHub / 更新日志链接）
+- GUI 美化：品牌蓝主题（与网页一致）、卡片式分区、状态指示点、按钮配色分级、深色模式开关、窗口/托盘/exe 图标（`cmd/genicon` 图标生成器）
+- exe 文件图标（`cmd/gui/icon.ico` + `icon_windows.syso`，仅 Windows 构建生效）
+
+### 修复
+
+- GUI `--background`（开机自启）模式下进程立即退出导致服务停止：隐藏窗口后仍进入事件循环，托盘与进程保持存活
+- Docker healthcheck 参数错误：`health-check -url` 接收基地址并自动追加 `/health`，compose 传入完整路径导致请求 `/health/health` 恒 404、容器被标记 unhealthy；改为传入 `http://localhost:8080`
+- 访问日志与防盗链拦截日志的 IP 统一尊重 `TRUSTED_PROXIES`（此前重构后不信任任何转发头，反代部署日志只见代理 IP）
+
+### 优化
+
+- **Web 框架去除 Gin，改用标准库 `net/http`**（Go 1.22+ 路由）；**配置读取去除 Viper**（改用 godotenv + yaml.v3）：服务器 exe 体积 17.5MB → 9.5MB，依赖数量大幅减少，全部测试通过；行为差异：非 GET 方法由 404 变为 405、HEAD 由 GET 路由匹配、访问日志与限流统一尊重 `TRUSTED_PROXIES`
 
 ## [1.3.0] - 2026-08-23
 

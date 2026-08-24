@@ -24,7 +24,7 @@ jobs:
           go-version: "1.26"
 
       - name: Ensure module files are tidy
-        # 与 gosum.yml 保持一致的升级策略：无本地 Go 环境下，由 CI 统一升级依赖并验证
+        # 与 gosum.yml 一致的升级策略：先升级全部依赖再 tidy，保证各 job 依赖版本一致
         run: |
           go get -u ./...
           go mod tidy
@@ -94,6 +94,15 @@ jobs:
           go build -ldflags="-s -w" -o "dist/health-check${{ matrix.ext }}" ./cmd/health-check/
           go build -ldflags="-s -w" -o "dist/build-index${{ matrix.ext }}" ./cmd/build-index/
           go build -ldflags="-s -w" -o "dist/sync-redis${{ matrix.ext }}" ./cmd/sync-redis/
+
+      - name: Build Windows GUI (control panel)
+        # GUI 控制面板仅 Windows 提供（Fyne 需 CGO + mingw 交叉编译）
+        if: matrix.goos == 'windows'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+          CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 \
+            go build -ldflags="-s -w -H windowsgui" -o "dist/img-api-gui.exe" ./cmd/gui/
 
       - name: Package zip
         run: |

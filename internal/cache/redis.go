@@ -13,7 +13,7 @@ import (
 // RedisCache 封装 go-redis 客户端，实现 Cache 接口。
 //
 // 连接参数在启动时通过 .env 注入，连接失败不会 panic，
-// 而是返回 error 由 main.go 回退到 MemoryCache。
+// 而是返回 error 由 app.NewServer 回退到 MemoryCache。
 type RedisCache struct {
 	client *redis.Client // go-redis 客户端（内部管理连接池）
 }

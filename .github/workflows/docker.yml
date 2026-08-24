@@ -1,7 +1,7 @@
 # 推送 tag（v*）时自动构建多架构 Docker 镜像并推送到 GitHub Container Registry (GHCR)
 #
 # 镜像地址：ghcr.io/chihirosyd/img-api:latest
-# 触发方式：git tag v1.0.0 && git push origin v1.0.0
+# 触发方式：git tag v1.4.0 && git push origin v1.4.0
 #
 # ⚠️ 首次推送后：到仓库的 Packages 页面将镜像可见性改为 Public，
 #    否则其他用户无法匿名拉取。

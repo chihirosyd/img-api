@@ -26,6 +26,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 - 🏠 **根路径首页** — 浏览器访问 `/` 展示教程页 + 运行状态仪表盘（状态/统计/图源健康，分类清单仅 Debug 展示），`<img>` 嵌入时仍直接出图
 - 🗂️ **本地图片索引** — `local.json` 首启自动生成，支持定时自动刷新，无索引时自动扫目录兜底
 - 📦 **免依赖部署** — 静态编译为独立二进制，无需 Go 环境、数据库或任何运行时；`build-index` / `sync-redis` / `health-check` 三个配套工具随 Release 包提供
+- 🖥️ **Windows 图形控制面板**（`img-api-gui.exe`）— 启动/停止服务、核心设置编辑、开机自启、后台托盘运行，小白双击即用
 - 🐳 **Docker 支持** — Alpine 多阶段构建、非 root 运行，镜像精简
 - 🔄 **CI/CD** — GitHub Actions 自动编译 5 平台二进制并发布 Release
 - 📊 **访问日志** — 每个请求记录 request_id、状态码与耗时，便于排障（健康检查探测不记录）
@@ -69,7 +70,8 @@ curl http://localhost:8080/health
 ### 二进制部署
 
 从 [Releases](https://github.com/chihirosyd/img-api/releases) 下载对应平台的 zip 包
-（内含 4 个可执行文件 + `.env.example` + `config/` + `resources/` 目录骨架 + 文档）：
+（内含可执行文件 + `.env.example` + `config/` + `resources/` 目录骨架 + 文档；
+Windows 版另含图形控制面板 `img-api-gui.exe`）：
 
 ```bash
 # Linux / macOS 示例
@@ -144,7 +146,7 @@ GET /health              → 完整状态与运行时统计
 | `APP_PORT` | `8080` | 监听端口 |
 | `RATE_LIMIT_MAX` | `60` | 每分钟每 IP 最大请求 |
 | `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔） |
-| `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔），反代场景下限流按真实 IP 统计 |
+| `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔），反代场景下限流与访问日志按真实 IP 统计 |
 | `REDIS_ADDR` | — | Redis 地址（留空禁用） |
 | `LOCAL_INDEX_REFRESH_MINUTES` | `0` | 本地图片索引自动刷新间隔（分钟，0=仅首次启动生成） |
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | 熔断失败阈值 |
@@ -159,10 +161,13 @@ GET /health              → 完整状态与运行时统计
 ```
 img-api/
 ├── cmd/                        # 入口程序
-│   ├── server/                 # 主服务
+│   ├── server/                 # 主服务（命令行）
+│   ├── gui/                    # Windows 图形控制面板（img-api-gui.exe）
 │   ├── build-index/            # 本地图片索引（手动重建，通常无需运行）
 │   ├── health-check/           # 健康检查 CLI
-│   └── sync-redis/             # TXT → Redis 同步
+│   ├── sync-redis/             # TXT → Redis 同步
+│   ├── genicon/                # exe/托盘图标生成器
+│   └── setversion/             # CHANGELOG → config.go / .env.example 版本同步
 ├── internal/                   # 核心源码
 │   ├── config/                 # 配置中心
 │   ├── model/                  # 数据模型
