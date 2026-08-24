@@ -311,7 +311,8 @@ GET /health
 | `degraded` | 部分图源仓库不可用（服务仍可处理其他来源） |
 
 > `external_pool` / `circuit_breaker` / `cache` 为信息性状态，不参与健康判定。
-> `version` 取自 `APP_VERSION` 配置（未设置时用代码内置默认值，与 CHANGELOG 保持一致）。
+> `version` 为代码内置版本号（随发布自动更新，与 CHANGELOG 一致）；
+> 可用环境变量 `APP_VERSION` 临时覆盖。
 
 ---
 

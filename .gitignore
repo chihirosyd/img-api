@@ -16,6 +16,8 @@ config/.env
 /build-index.exe
 /sync-redis
 /sync-redis.exe
+/setversion
+/setversion.exe
 /build/
 # release workflow 本地复跑产物
 /dist/

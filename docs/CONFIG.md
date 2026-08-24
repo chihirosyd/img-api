@@ -150,7 +150,8 @@ HALF_OPEN ──任一失败──→ OPEN
 
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `APP_VERSION` | string | `1.3.0` | 语义版本号，影响 `/health` 返回与首页显示；由 `cmd/setversion` 随 CHANGELOG 自动同步 |
+> 💡 版本号由代码内置（随发布自动更新，`cmd/setversion` 与 CHANGELOG 同步），
+> 显示于首页与 `/health`；如需临时覆盖可设置环境变量 `APP_VERSION`。
 
 ---
 

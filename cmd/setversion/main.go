@@ -1,7 +1,7 @@
 // setversion 以 CHANGELOG.md 的最新已发布版本号为唯一来源，
-// 自动同步到另外两个位置，保证三处版本号一致：
-//   - internal/config/config.go 的 APP_VERSION 默认值（首页 / /health 兜底显示）
-//   - .env.example 的 APP_VERSION 行（部署模板）
+// 自动同步到代码内置版本号，保证三处版本号一致：
+//   - internal/config/config.go 的 APP_VERSION 默认值（首页 / /health 显示）
+//   - .env.example 不再含 APP_VERSION（跟随代码内置，环境变量可临时覆盖）
 //
 // 用法（项目根目录，发布时改完 CHANGELOG 后执行一次）：
 //
@@ -24,8 +24,6 @@ var (
 	changelogVer = regexp.MustCompile(`(?m)^## \[([0-9]+\.[0-9]+\.[0-9]+)\]`)
 	// config.go 默认值中的版本号
 	configVer = regexp.MustCompile(`"APP_VERSION": "[0-9]+\.[0-9]+\.[0-9]+"`)
-	// .env.example 中的版本号行（兼容 CRLF 与行尾注释前空格）
-	envVer = regexp.MustCompile(`(?m)^APP_VERSION=[0-9]+\.[0-9]+\.[0-9]+[ \t]*\r?$`)
 )
 
 func main() {
@@ -59,19 +57,5 @@ func main() {
 		log.Fatalf("write %s: %v", cfgPath, err)
 	}
 
-	// 3. 同步 .env.example
-	envPath := filepath.Join(root, ".env.example")
-	env, err := os.ReadFile(envPath)
-	if err != nil {
-		log.Fatalf("read %s: %v", envPath, err)
-	}
-	if !envVer.Match(env) {
-		log.Fatalf("%s 中未找到 APP_VERSION 行", envPath)
-	}
-	env = envVer.ReplaceAll(env, []byte("APP_VERSION="+ver))
-	if err := os.WriteFile(envPath, env, 0644); err != nil {
-		log.Fatalf("write %s: %v", envPath, err)
-	}
-
-	fmt.Printf("✅ 版本已同步为 %s（来源：CHANGELOG.md）\n  - internal/config/config.go\n  - .env.example\n", ver)
+	fmt.Printf("✅ 版本已同步为 %s（来源：CHANGELOG.md）\n  - internal/config/config.go（.env.example 无需同步，跟随代码内置）\n", ver)
 }
