@@ -2,6 +2,12 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.4.1] - 2026-08-24
+
+### 移除
+
+- 删除仓库内 LICENSE 文件（许可证由仓库所有者在 GitHub 界面选择创建）
+
 ## [1.4.0] - 2026-08-24
 
 ### 新增
