@@ -70,18 +70,63 @@ func (h *HealthHandler) fullHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// formatDuration 将 Duration 格式化为 "Xh Ym Zs" 的可读形式。
-// 小于 1 小时时不展示小时部分，小于 1 分钟时不展示分钟部分。
-func formatDuration(d time.Duration) string {
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-	seconds := int(d.Seconds()) % 60
+// durUnit 是时长单位（名称 + 该单位的秒数）。
+type durUnit struct {
+	name string
+	secs int64
+}
 
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+// formatDuration 将 Duration 格式化为人类可读的运行时长。
+//
+// 按量级自动选择单位，每级保留两位有效单位（如 45h → "1d 21h"、30d → "1mo"）：
+//
+//	< 1 分钟 → "Xs"；< 1 小时 → "Xm Ys"；< 1 天 → "Xh Ym"
+//	< 30 天 → "Xd Yh"；< 365 天 → "Xmo Yd"；≥ 365 天 → "Xy Ymo"
+//
+// 月按 30 天、年按 365 天近似计算（展示用途，精度足够）。
+func formatDuration(d time.Duration) string {
+	sec := int64(d.Seconds())
+	if sec < 0 {
+		sec = 0
 	}
-	if minutes > 0 {
-		return fmt.Sprintf("%dm %ds", minutes, seconds)
+
+	const (
+		minute = int64(60)
+		hour   = 60 * minute
+		day    = 24 * hour
+		month  = 30 * day
+		year   = 365 * day
+	)
+
+	if sec < minute {
+		return fmt.Sprintf("%ds", sec)
 	}
-	return fmt.Sprintf("%ds", seconds)
+
+	// 每级的单位组合：[高位单位, 低位单位]
+	var units []durUnit
+	switch {
+	case sec < hour:
+		units = []durUnit{{"m", minute}, {"s", 1}}
+	case sec < day:
+		units = []durUnit{{"h", hour}, {"m", minute}}
+	case sec < month:
+		units = []durUnit{{"d", day}, {"h", hour}}
+	case sec < year:
+		units = []durUnit{{"mo", month}, {"d", day}}
+	default:
+		units = []durUnit{{"y", year}, {"mo", month}}
+	}
+
+	var b strings.Builder
+	for _, u := range units {
+		if sec < u.secs {
+			continue // 低位单位为 0 时省略（如 "1d" 而非 "1d 0h"）
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%d%s", sec/u.secs, u.name)
+		sec %= u.secs
+	}
+	return b.String()
 }

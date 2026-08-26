@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"img-api/internal/cache"
 	"img-api/internal/config"
@@ -146,6 +147,29 @@ func TestServeLocalFile(t *testing.T) {
 	h.serveLocalFile(w, r, filepath.Join(root, "note.txt"))
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("non-image status = %d, want 502", w.Code)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{45 * time.Second, "45s"},
+		{5*time.Minute + 30*time.Second, "5m 30s"},
+		{2*time.Hour + 15*time.Minute, "2h 15m"},
+		{24 * time.Hour, "1d"},
+		{45*time.Hour + 15*time.Minute, "1d 21h"},
+		{30 * 24 * time.Hour, "1mo"},
+		{60 * 24 * time.Hour, "2mo"},
+		{365 * 24 * time.Hour, "1y"},
+		{400 * 24 * time.Hour, "1y 1mo"},
+		{0, "0s"},
+	}
+	for _, c := range cases {
+		if got := formatDuration(c.in); got != c.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
