@@ -2,6 +2,17 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.4.4] - 2026-08-30
+
+### 新增
+
+- txt / local 渠道支持自定义默认分类（`TXT_DEFAULT_CATEGORY` / `LOCAL_DEFAULT_CATEGORY`）：请求不带 `category`（或传 `default`）时使用，留空保持内置 `default`；"分类不存在"提示页同步显示实际使用的分类
+
+### 其他
+
+- 升级 golang.org/x/image v0.24.0 → v0.45.0（修复 4 个 tiff 解码相关漏洞，govulncheck 全绿）
+- GUI 主题改用 theme.DefaultTheme 并显式按开关选择亮/暗变体，移除已弃用的 LightTheme/DarkTheme 调用
+
 ## [1.4.3] - 2026-08-26
 
 ### 优化

@@ -59,6 +59,7 @@ func (r *TxtRepository) Name() string { return "txt" }
 //  1. 优先从 Redis img:{pc|pe}:{category} Set 中用 SRandMember
 //  2. Redis 未命中/不可用 → 回退到直接读取 TXT 文件
 func (r *TxtRepository) Random(ctx context.Context, category string, deviceType model.DeviceType) (*model.Image, error) {
+	// Service 层已解析默认分类（含 TXT_DEFAULT_CATEGORY 配置），这里仅兜底空值
 	if category == "" {
 		category = "default"
 	}

@@ -247,17 +247,21 @@ server {
 }
 ```
 
-Nginx 处理时建议关闭 Go 内置的对应功能：
+Nginx 处理时建议关闭 Go 内置的对应功能（`<img>` 标签嵌图不需要跨域，
+此处关闭 CORS 不影响博客引用图片）：
 
 ```ini
 CORS_ENABLED=false
 RATE_LIMIT_ENABLED=false
 REFERER_WHITELIST=
+TRUSTED_PROXIES=172.17.0.0/16（示例，请按照实际填写）   # 可选但推荐：填写后应用自带日志能按真实访客 IP 记录（Nginx 日志不受影响）
 ```
 
-> 💡 若想保留 Go 内置限流（`RATE_LIMIT_ENABLED=true`），需配置
-> `TRUSTED_PROXIES=172.17.0.0/16`（Nginx 所在网段），限流才会按
+> 💡 若想保留 Go 内置限流（`RATE_LIMIT_ENABLED=true`），则必须配置
+> `TRUSTED_PROXIES=172.17.0.0/16`（Nginx 所在网段）（示例，请按照实际填写），限流才会按
 > `X-Forwarded-For` 中的真实客户端 IP 统计；未配置时一律按 Nginx 的 IP 计数。
+> 注意：`TRUSTED_PROXIES` 需配合 `proxy_set_header X-Forwarded-For` 才生效，
+> 且网段尽量填窄（能覆盖网关即可）。
 
 ---
 

@@ -34,14 +34,19 @@ type AppConfig struct {
 	Port int    // HTTP 监听端口
 	Version string // 语义版本号（影响 /health 返回和启动日志）
 
-	CorsEnabled      bool // 是否启用 CORS 头（Nginx 反代时可关闭）
-	RateLimitEnabled bool // 是否启用 IP 频率限制
+	CorsEnabled      bool // 是否启用跨域响应头（<img> 嵌图无需跨域；Nginx 处理时可关闭）
+	RateLimitEnabled bool // 是否启用内置 IP 限流（纯内存实现）
 	RateLimitMax     int  // 每分钟每 IP 最大请求数
 
-	RefererWhitelist []string // 防盗链域名白名单（空 = 不限制）
-	TrustedProxies   []string // 可信反代网段（CIDR），限流时仅信任这些来源的转发头
+	RefererWhitelist []string // 防盗链域名白名单（空 = 不限制；反代转发后依然生效）
+	TrustedProxies   []string // 可信反代网段（CIDR），限流与访问日志仅信任这些来源的转发头
 
 	DefaultSource string // 默认图片源类型：txt / local / external
+
+	// 渠道默认分类：请求不带 category（或显式传 "default"）时使用。
+	// 留空 = 内置 "default"（default.txt / default 目录）
+	TxtDefaultCategory   string
+	LocalDefaultCategory string
 
 	LocalIndexRefreshMinutes int // local 索引自动刷新间隔（分钟，0=仅启动时生成一次）
 
@@ -142,6 +147,9 @@ func Load(rootPath string) error {
 
 		DefaultSource: getStr("DEFAULT_SOURCE"),
 
+		TxtDefaultCategory:   strings.TrimSpace(getStr("TXT_DEFAULT_CATEGORY")),
+		LocalDefaultCategory: strings.TrimSpace(getStr("LOCAL_DEFAULT_CATEGORY")),
+
 		LocalIndexRefreshMinutes: getInt("LOCAL_INDEX_REFRESH_MINUTES"),
 
 		RedisAddr:     getStr("REDIS_ADDR"),
@@ -230,7 +238,7 @@ var defaults = map[string]string{
 	"APP_DEBUG": "false",
 	"APP_NAME":  "img-api",
 	"APP_HOST":  "0.0.0.0",
-	"APP_VERSION": "1.4.3",
+	"APP_VERSION": "1.4.4",
 	"APP_PORT":   "8080",
 
 	"CORS_ENABLED":       "true",
@@ -247,6 +255,10 @@ var defaults = map[string]string{
 
 	"DEFAULT_SOURCE":              "txt",
 	"LOCAL_INDEX_REFRESH_MINUTES": "0", // 0=不自动刷新，仅启动时生成一次
+
+	// 默认分类：留空 = 内置 "default"（txt 的 default.txt / local 的 default 目录）
+	"TXT_DEFAULT_CATEGORY":   "",
+	"LOCAL_DEFAULT_CATEGORY": "",
 
 	"REDIS_ADDR":     "",
 	"REDIS_PASSWORD": "",

@@ -77,6 +77,7 @@ func (r *LocalRepository) Name() string { return "local" }
 //  1. 优先从内存索引（由 local.json 加载）中读取
 //  2. 索引中没有该分类 → 直接扫描目录兜底（新增分类即时可用）
 func (r *LocalRepository) Random(ctx context.Context, category string, deviceType model.DeviceType) (*model.Image, error) {
+	// Service 层已解析默认分类（含 LOCAL_DEFAULT_CATEGORY 配置），这里仅兜底空值
 	if category == "" {
 		category = "default"
 	}

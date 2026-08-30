@@ -147,7 +147,7 @@ const homePage = `<!DOCTYPE html>
       <p><code>&lt;img src="http://{{HOST}}/random"&gt;</code></p>
     </div>
     <div class="step"><span class="num">3</span><span class="t">指定分类</span>
-      <p>分类名 = 图库 txt 文件名，如 <code>?category=风景</code></p>
+      <p>分类名 = 图库 txt 文件名（local 图源为目录名），如 <code>?category=风景</code>；不传则用默认分类</p>
     </div>
   </div>
 
@@ -156,7 +156,7 @@ const homePage = `<!DOCTYPE html>
     <tr><td><code>type</code></td><td>auto / pc / pe — 设备类型（手机竖屏用 pe）</td></tr>
     <tr><td><code>source</code></td><td>txt / local / external — 图片来源</td></tr>
     <tr><td><code>mode</code></td><td>redirect / json / image — 返回模式</td></tr>
-    <tr><td><code>category</code></td><td>分类名，逗号多选，如 anime,scenery</td></tr>
+    <tr><td><code>category</code></td><td>分类名，逗号多选，如 anime,scenery；不传则用默认分类</td></tr>
   </table>
 
   <div class="tip">💡 图源还没有图片时，访问 /random 会显示"开始使用"引导页，

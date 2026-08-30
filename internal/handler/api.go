@@ -157,7 +157,8 @@ func statusBadge(status string) string {
 //	type     — auto（默认）/ pc / pe
 //	source   — txt（默认）/ local / external
 //	mode     — redirect（默认）/ json / image
-//	category — 分类名，逗号分隔多选（默认 "default"）
+//	category — 分类名，逗号分隔多选。默认分类："default"，
+//	            txt/local 可通过 TXT_DEFAULT_CATEGORY / LOCAL_DEFAULT_CATEGORY 配置
 //	api      — 外部 API 名称（source=external 时可选，空=随机选取）
 func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 	h.stats.RecordRequest()
@@ -240,15 +241,18 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 		// 对该设备同样返回"分类不存在"提示，而不是笼统的 500。
 		// 外部 API 渠道：分类不在白名单中（ErrCategoryNotSupported）同样返回此提示页。
 		var categoryNotSupported *model.ErrCategoryNotSupported
+		// 按与请求相同的规则解析默认分类（可能命中自定义默认分类），
+		// 确保"分类不存在"提示页显示的分类与实际使用的分类一致。
+		category := h.svc.ResolveDefaultCategory(params.Source, params.Category)
 		if errors.As(err, &categoryNotSupported) ||
-			!h.svc.CategoryExists(params.Source, params.Category) ||
-			!h.svc.CategoryExistsFor(params.Source, params.Category, deviceType) {
+			!h.svc.CategoryExists(params.Source, category) ||
+			!h.svc.CategoryExistsFor(params.Source, category, deviceType) {
 			// 仅 Debug 模式列出可用分类（避免向外部暴露图库分类清单）
 			var available []string
 			if config.C.Debug {
 				available = h.svc.AvailableCategories(params.Source)
 			}
-			h.renderCategoryNotFound(w, r, params.Category, available, params.Mode)
+			h.renderCategoryNotFound(w, r, category, available, params.Mode)
 			return
 		}
 

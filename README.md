@@ -145,12 +145,14 @@ GET /health              → 完整状态与运行时统计
 |--------|--------|------|
 | `APP_PORT` | `8080` | 监听端口 |
 | `RATE_LIMIT_MAX` | `60` | 每分钟每 IP 最大请求 |
-| `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔） |
-| `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔），反代场景下限流与访问日志按真实 IP 统计 |
+| `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔），Nginx 转发后依然生效 |
+| `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔，可选），填写后限流与应用自带日志按真实访客 IP 统计（网关自身日志不受影响） |
 | `REDIS_ADDR` | — | Redis 地址（留空禁用） |
 | `LOCAL_INDEX_REFRESH_MINUTES` | `0` | 本地图片索引自动刷新间隔（分钟，0=仅首次启动生成） |
+| `TXT_DEFAULT_CATEGORY` | — | txt 渠道默认分类（请求不带 `category` 时使用，留空=`default`） |
+| `LOCAL_DEFAULT_CATEGORY` | — | local 渠道默认分类（同上，留空=`default`） |
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | 熔断失败阈值 |
-| `CORS_ENABLED` | `true` | Nginx 反代时可关闭 |
+| `CORS_ENABLED` | `true` | 跨域响应头；`<img>` 嵌图无需跨域，Nginx 已处理时可关闭 |
 
 > 📚 完整配置参考见 [docs/CONFIG.md](docs/CONFIG.md)
 

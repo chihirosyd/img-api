@@ -27,11 +27,11 @@
 
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `RATE_LIMIT_ENABLED` | bool | `true` | 是否开启 IP 限流 |
-| `RATE_LIMIT_MAX` | int | `60` | 每分钟每 IP 最大请求数 |
-| `REFERER_WHITELIST` | string | — | 防盗链域名白名单，逗号分隔（如 `mysite.com,blog.mysite.com`）。空 Referer 默认放行 |
-| `TRUSTED_PROXIES` | string | — | 可信反代网段（逗号分隔 CIDR，如 `172.17.0.0/16`）。仅当请求来自这些网段时，限流器与访问日志才信任 `X-Forwarded-For`/`X-Real-IP`；留空 = 一律按 TCP 对端 IP（防伪造） |
-| `CORS_ENABLED` | bool | `true` | 是否添加 CORS 头（Nginx 反代时可关闭） |
+| `RATE_LIMIT_ENABLED` | bool | `true` | 是否开启内置 IP 限流（纯内存实现：重启清零、多副本各自计数）。前方有 Nginx/OpenResty 时建议关闭并改用网关的 `limit_req`，否则需配合 `TRUSTED_PROXIES` 才能按真实访客统计 |
+| `RATE_LIMIT_MAX` | int | `60` | 每分钟每 IP 最大请求数（`RATE_LIMIT_ENABLED=true` 时生效） |
+| `REFERER_WHITELIST` | string | — | 防盗链域名白名单，逗号分隔（如 `mysite.com,blog.mysite.com`）。空 Referer 默认放行；留空 = 不限制。经 Nginx 转发后依然生效 |
+| `TRUSTED_PROXIES` | string | — | 可信反代网段（逗号分隔 CIDR，如 `172.17.0.0/16`）。仅当请求来自这些网段时，限流器与应用自带访问日志（`storage/logs`）才信任 `X-Forwarded-For`/`X-Real-IP`；留空 = 一律按 TCP 对端 IP（防伪造）。限流交给网关后仍建议填写，应用自带日志才能记录真实访客 IP（网关自身的日志不受影响，本就能记录真实 IP） |
+| `CORS_ENABLED` | bool | `true` | 是否添加跨域响应头。`<img>` 标签嵌图不需要跨域；只有其他网站的 JS 调用本 API 才需要。Nginx 已处理时可关闭（仅一侧开启，勿两边同开） |
 
 ---
 
@@ -40,6 +40,8 @@
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `DEFAULT_SOURCE` | string | `txt` | 默认图片来源：`txt` / `local` / `external` |
+| `TXT_DEFAULT_CATEGORY` | string | — | txt 渠道默认分类：请求不带 `category`（或显式传 `default`）时使用。留空 = 内置 `default`（`default.txt`） |
+| `LOCAL_DEFAULT_CATEGORY` | string | — | local 渠道默认分类：请求不带 `category`（或显式传 `default`）时使用。留空 = 内置 `default`（`default` 目录） |
 | `LOCAL_INDEX_REFRESH_MINUTES` | int | `0` | 本地图片索引（`storage/index/local.json`）自动刷新间隔（分钟）。`0`=仅在首次启动时生成一次 |
 
 > 📌 本地图片索引说明：首次启动时若 `storage/index/local.json` 不存在会自动生成。
@@ -171,15 +173,20 @@ HALF_OPEN ──任一失败──→ OPEN
 
 ## Nginx 反代场景
 
-如果前方有 Nginx，建议配置：
+如果前方有 Nginx/OpenResty，限流与跨域建议只开一侧，推荐交给网关处理：
 
 ```nginx
-# .env
-CORS_ENABLED=false              # Nginx 处理 CORS
-RATE_LIMIT_ENABLED=true         # Go 仍可限流
-TRUSTED_PROXIES=10.0.0.0/8      # 填写 Nginx 所在网段，限流才按真实客户端 IP 统计
+# .env —— 方案 A：限流/跨域交给网关（推荐）
+CORS_ENABLED=false              # 跨域交给网关（<img> 嵌图本来就不需要跨域）
+RATE_LIMIT_ENABLED=false        # 限流交给网关的 limit_req
+TRUSTED_PROXIES=172.17.0.0/16（示例，请按照实际填写）   # 可选但推荐：应用自带日志按真实访客 IP 记录（网关日志不受影响）
 
-# nginx.conf
+# .env —— 方案 B：保留 Go 内置限流
+CORS_ENABLED=false              # 跨域交给网关（或保留 true，二选一，勿两边同开）
+RATE_LIMIT_ENABLED=true         # Go 限流
+TRUSTED_PROXIES=172.17.0.0/16（示例，请按照实际填写）      # 必填：填写网关所在网段，限流才按真实客户端 IP 统计
+
+# nginx.conf（两种方案均建议）
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header Host $host;
 ```

@@ -25,15 +25,15 @@ type brandTheme struct {
 }
 
 // newBrandTheme 返回亮色或暗色的品牌主题。
+//
+// 注意：theme.LightTheme()/DarkTheme() 已弃用（v3 将移除），
+// 这里基于 DefaultTheme，并在 Color 中显式按开关选择亮/暗变体，
+// 使全部颜色（含非品牌色）与 GUI 深色模式开关保持一致。
 func newBrandTheme(dark bool) fyne.Theme {
-	var base fyne.Theme = theme.LightTheme()
-	if dark {
-		base = theme.DarkTheme()
-	}
-	return &brandTheme{Theme: base, dark: dark}
+	return &brandTheme{Theme: theme.DefaultTheme(), dark: dark}
 }
 
-func (t *brandTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+func (t *brandTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
 	switch name {
 	case theme.ColorNamePrimary, theme.ColorNameHyperlink, theme.ColorNameFocus:
 		if t.dark {
@@ -57,6 +57,11 @@ func (t *brandTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) 
 			return color.NRGBA{R: 0x36, G: 0x42, B: 0x58, A: 0xff}
 		}
 		return color.NRGBA{R: 0xcf, G: 0xe2, B: 0xfd, A: 0xff}
+	}
+	// 非品牌色：忽略渲染器传入的系统偏好变体，显式按开关取值
+	variant := theme.VariantLight
+	if t.dark {
+		variant = theme.VariantDark
 	}
 	return t.Theme.Color(name, variant)
 }

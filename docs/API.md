@@ -90,7 +90,7 @@ GET /random?source=external
 | `type` | string | — | `auto` | 设备类型：`auto`（自动检测）/ `pc` / `pe` |
 | `source` | string | — | `txt` | 图片来源：`txt` / `local` / `external`（外部 API 池）。默认值可通过 `DEFAULT_SOURCE` 配置修改 |
 | `mode` | string | — | `redirect` | 返回模式：`redirect` / `json` / `image` |
-| `category` | string | — | `default` | 图片分类，逗号分隔多选（如 `anime,scenery`） |
+| `category` | string | — | `default` | 图片分类，逗号分隔多选（如 `anime,scenery`）。默认分类内置为 `default`，txt/local 渠道可通过 `TXT_DEFAULT_CATEGORY` / `LOCAL_DEFAULT_CATEGORY` 配置修改 |
 | `api` | string | — | 随机 | `source=external` 时指定使用哪个外部 API（不传则随机选一个） |
 
 ### 参数详解
@@ -152,7 +152,8 @@ GET /random?source=external
 
 - 单分类：`?category=anime`
 - 多分类随机：`?category=anime,scenery,beauty`
-- 留空使用默认分类：`default`
+- 留空或传 `default`：使用默认分类（内置 `default`；txt/local 可通过
+  `TXT_DEFAULT_CATEGORY` / `LOCAL_DEFAULT_CATEGORY` 修改，external 使用各 API 的 `default_category`）
 - 支持中文：`?category=风景`（浏览器自动 URL 编码）
 
 > 💡 多分类行为：从请求的分类中筛选出**实际存在**的再随机选取，

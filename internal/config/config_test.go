@@ -37,6 +37,7 @@ func clearEnv(t *testing.T) {
 		"APP_DEBUG", "APP_NAME", "APP_HOST", "APP_PORT", "APP_VERSION",
 		"CORS_ENABLED", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MAX",
 		"REFERER_WHITELIST", "TRUSTED_PROXIES", "DEFAULT_SOURCE", "LOCAL_INDEX_REFRESH_MINUTES",
+		"TXT_DEFAULT_CATEGORY", "LOCAL_DEFAULT_CATEGORY",
 		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_DB",
 		"CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_TIMEOUT_SECONDS", "CIRCUIT_HALF_OPEN_MAX",
 		"LOG_LEVEL", "LOG_DIR", "LOG_MAX_AGE", "LOG_MAX_SIZE",
@@ -65,6 +66,8 @@ func TestLoad(t *testing.T) {
 		"REFERER_WHITELIST=a.com,b.com\n" +
 		"TRUSTED_PROXIES=10.0.0.0/8\n" +
 		"DEFAULT_SOURCE=local\n" +
+		"TXT_DEFAULT_CATEGORY=wallpaper\n" +
+		"LOCAL_DEFAULT_CATEGORY=photos\n" +
 		"CIRCUIT_FAILURE_THRESHOLD=10\n" +
 		"LOG_LEVEL=debug\n"
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(content), 0644); err != nil {
@@ -86,6 +89,10 @@ func TestLoad(t *testing.T) {
 	}
 	if C.DefaultSource != "local" {
 		t.Errorf("DefaultSource = %q, want local", C.DefaultSource)
+	}
+	if C.TxtDefaultCategory != "wallpaper" || C.LocalDefaultCategory != "photos" {
+		t.Errorf("default categories = %q / %q, want wallpaper / photos",
+			C.TxtDefaultCategory, C.LocalDefaultCategory)
 	}
 	if C.CircuitFailureThreshold != 10 {
 		t.Errorf("CircuitFailureThreshold = %d, want 10", C.CircuitFailureThreshold)

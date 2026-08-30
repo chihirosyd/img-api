@@ -100,6 +100,9 @@ func (s *RandomService) GetRepo(source model.SourceType) repository.ImageReposit
 // 每次请求都在仓库层独立随机（不缓存选中的结果），
 // 维持"随机图"语义：同一分类的连续请求通常返回不同图片（图库较小时可能重复）。
 func (s *RandomService) Random(ctx context.Context, source model.SourceType, apiName, category string, deviceType model.DeviceType) (*model.Image, error) {
+	// txt/local 支持通过配置自定义默认分类（external 的默认分类在池内按 API 解析）。
+	category = s.ResolveDefaultCategory(source, category)
+
 	// 解析多分类：多分类时只从"实际可用"的分类中随机选（外部渠道按 API 池
 	// 白名单过滤），避免选到不存在的分类导致误报 500。
 	pickedCategory := s.pickExistingCategory(source, category, deviceType)
@@ -429,6 +432,35 @@ func (s *RandomService) checkSourcesEmpty() map[model.SourceType]bool {
 	s.sourceEmptyMap = result
 	s.mu.Unlock()
 	return result
+}
+
+// ResolveDefaultCategory 将"未指定分类"解析为渠道的默认分类。
+//
+//   - external：不处理，返回原值（各 API 的 default_category 由 ExternalPool 解析）；
+//   - txt/local：raw 为空或 "default" 时，返回 TXT_DEFAULT_CATEGORY /
+//     LOCAL_DEFAULT_CATEGORY 的配置值，未配置则回退内置 "default"；
+//     显式指定其他分类（含多选）时原样返回。
+//
+// Handler 渲染"分类不存在"提示页时也使用本方法，保证提示页显示的分类
+// 与实际使用的分类一致。
+func (s *RandomService) ResolveDefaultCategory(source model.SourceType, raw string) string {
+	if source == model.SourceExternal || (raw != "" && raw != "default") {
+		return raw
+	}
+
+	configured := "default"
+	if config.C != nil {
+		switch source {
+		case model.SourceTxt:
+			configured = config.C.TxtDefaultCategory
+		case model.SourceLocal:
+			configured = config.C.LocalDefaultCategory
+		}
+	}
+	if v := strings.TrimSpace(configured); v != "" {
+		return v
+	}
+	return "default"
 }
 
 // pickExistingCategory 从逗号分隔的类别中随机选一个"实际可用"的分类。
