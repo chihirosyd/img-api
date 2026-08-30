@@ -2,6 +2,12 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.4.7] - 2026-08-30
+
+### 新增
+
+- 首页仪表盘与 `/health` 增加"今日统计"：`today_*` 字段按本地时间每日 0 点自动归零，`total_*` 保持自启动累计（重启归零）
+
 ## [1.4.6] - 2026-08-30
 
 ### 新增

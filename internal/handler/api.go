@@ -113,11 +113,20 @@ func (h *APIHandler) homeStatusHTML(r *http.Request) string {
 	}
 	b.WriteString(`</tbody></table>`)
 
+	b.WriteString(`<p class="sub">累计（自服务启动）· 重启归零</p>`)
 	b.WriteString(`<div class="stat-grid">`)
 	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">总请求</div></div>`, snap.TotalRequests)
 	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">成功</div></div>`, snap.TotalSuccess)
 	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">失败</div></div>`, snap.TotalFail)
 	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">熔断</div></div>`, snap.CircuitTrips)
+	b.WriteString(`</div>`)
+
+	b.WriteString(`<p class="sub">今日 · 每日 0 点重置</p>`)
+	b.WriteString(`<div class="stat-grid">`)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">今日请求</div></div>`, snap.TodayRequests)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">今日成功</div></div>`, snap.TodaySuccess)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">今日失败</div></div>`, snap.TodayFail)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">今日熔断</div></div>`, snap.TodayTrips)
 	b.WriteString(`</div>`)
 
 	if config.C.Debug {

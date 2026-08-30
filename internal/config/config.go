@@ -240,7 +240,7 @@ var defaults = map[string]string{
 	"APP_DEBUG": "false",
 	"APP_NAME":  "img-api",
 	"APP_HOST":  "0.0.0.0",
-	"APP_VERSION": "1.4.6",
+	"APP_VERSION": "1.4.7",
 	"APP_PORT":   "8080",
 
 	"CORS_ENABLED":       "true",

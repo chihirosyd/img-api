@@ -299,7 +299,11 @@ GET /health
     "total_success": 1200,
     "total_fail": 34,
     "circuit_trips": 0,
-    "uptime_seconds": 7530
+    "uptime_seconds": 7530,
+    "today_requests": 567,
+    "today_success": 550,
+    "today_fail": 17,
+    "today_trips": 0
   }
 }
 ```
@@ -314,6 +318,7 @@ GET /health
 > `external_pool` / `circuit_breaker` / `cache` 为信息性状态，不参与健康判定。
 > `version` 为代码内置版本号（随发布自动更新，与 CHANGELOG 一致）；
 > 可用环境变量 `APP_VERSION` 临时覆盖。
+> 统计字段两组：`total_*` 自服务启动累计（重启归零）；`today_*` 当日累计，按本地时间每日 0 点自动归零。
 
 ---
 
