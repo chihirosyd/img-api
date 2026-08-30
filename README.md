@@ -295,4 +295,4 @@ resources/local/
 
 ## 📄 License
 
-MIT © 2026
+[MIT](./LICENSE) © 2026 chihiro
