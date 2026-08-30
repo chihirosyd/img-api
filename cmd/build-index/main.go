@@ -4,7 +4,7 @@
 // 与主服务自动索引共用同一扫描函数（repository.ScanLocalImages），结果保持一致。
 //
 // ⚠️ 通常无需手动运行：主服务启动时会自动生成/加载索引（见 LocalRepository），
-// 并可配置 LOCAL_INDEX_REFRESH_MINUTES 定时刷新。此命令用于：
+// 并可配置 LOCAL_INDEX_REFRESH 计划表自动刷新（duration/@ 描述符/cron）。此命令用于：
 //   - 无需重启服务、立即重建索引
 //   - 验证索引文件格式
 //

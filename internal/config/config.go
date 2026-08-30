@@ -48,7 +48,9 @@ type AppConfig struct {
 	TxtDefaultCategory   string
 	LocalDefaultCategory string
 
-	LocalIndexRefreshMinutes int // local 索引自动刷新间隔（分钟，0=仅启动时生成一次）
+	// local 索引自动刷新计划：0/空=仅启动时生成一次；
+	// Go duration（30s/30m/24h/168h）；@ 描述符（@daily/@weekly/@monthly/@yearly）；5 字段 cron
+	LocalIndexRefresh string
 
 	RedisAddr     string // Redis 地址（ip:port），空字符串表示不启用
 	RedisPassword string // Redis 密码
@@ -150,7 +152,7 @@ func Load(rootPath string) error {
 		TxtDefaultCategory:   strings.TrimSpace(getStr("TXT_DEFAULT_CATEGORY")),
 		LocalDefaultCategory: strings.TrimSpace(getStr("LOCAL_DEFAULT_CATEGORY")),
 
-		LocalIndexRefreshMinutes: getInt("LOCAL_INDEX_REFRESH_MINUTES"),
+		LocalIndexRefresh: strings.TrimSpace(getStr("LOCAL_INDEX_REFRESH")),
 
 		RedisAddr:     getStr("REDIS_ADDR"),
 		RedisPassword: getStr("REDIS_PASSWORD"),
@@ -238,7 +240,7 @@ var defaults = map[string]string{
 	"APP_DEBUG": "false",
 	"APP_NAME":  "img-api",
 	"APP_HOST":  "0.0.0.0",
-	"APP_VERSION": "1.4.5",
+	"APP_VERSION": "1.4.6",
 	"APP_PORT":   "8080",
 
 	"CORS_ENABLED":       "true",
@@ -253,8 +255,10 @@ var defaults = map[string]string{
 	// 留空 = 不信任任何转发头（防伪造），直连部署无需配置。
 	"TRUSTED_PROXIES": "",
 
-	"DEFAULT_SOURCE":              "txt",
-	"LOCAL_INDEX_REFRESH_MINUTES": "0", // 0=不自动刷新，仅启动时生成一次
+	"DEFAULT_SOURCE": "txt",
+
+	// 刷新计划：0/空=仅启动时生成一次；详见 LOCAL_INDEX_REFRESH 注释
+	"LOCAL_INDEX_REFRESH": "",
 
 	// 默认分类：留空 = 内置 "default"（txt 的 default.txt / local 的 default 目录）
 	"TXT_DEFAULT_CATEGORY":   "",

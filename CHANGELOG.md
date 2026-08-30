@@ -2,6 +2,17 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.4.6] - 2026-08-30
+
+### 新增
+
+- local 索引自动刷新升级为计划表（`LOCAL_INDEX_REFRESH`）：支持 Go duration（如 `30s`/`30m`/`24h`/`168h`）、`@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` 描述符与标准 5 字段 cron（如 `0 3 * * *` 每天 03:00），底层改用 robfig/cron 调度
+
+### 变更
+
+- external 渠道未配置 `default_category` 时不再向上游发送字面 `default`：`{category}` 占位符置空、不追加 `category_param`，避免与上游 API 的分类参数冲突
+- 移除旧键 `LOCAL_INDEX_REFRESH_MINUTES`（整数分钟），改由 `LOCAL_INDEX_REFRESH` 统一承载（分钟写 `30m`）；项目尚无存量部署，不做兼容迁移
+
 ## [1.4.5] - 2026-08-30
 
 ### 优化

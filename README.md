@@ -148,7 +148,7 @@ GET /health              → 完整状态与运行时统计
 | `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔），Nginx 转发后依然生效 |
 | `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔，可选），填写后限流与应用自带日志按真实访客 IP 统计（网关自身日志不受影响） |
 | `REDIS_ADDR` | — | Redis 地址（留空禁用） |
-| `LOCAL_INDEX_REFRESH_MINUTES` | `0` | 本地图片索引自动刷新间隔（分钟，0=仅首次启动生成） |
+| `LOCAL_INDEX_REFRESH` | — | 本地图片索引自动刷新计划（三种写法任选其一）：`0`/空=仅首启生成；Go duration（`30m`/`24h`/`168h`）、`@daily` 等描述符、5 字段 cron |
 | `TXT_DEFAULT_CATEGORY` | — | txt 渠道默认分类（请求不带 `category` 时使用，留空=`default`） |
 | `LOCAL_DEFAULT_CATEGORY` | — | local 渠道默认分类（同上，留空=`default`） |
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | 熔断失败阈值 |
@@ -262,7 +262,7 @@ resources/local/
 
 > ⚠️ 生效时机：**新增分类**（新目录）即时生效；**已有分类中增删图片**需重建索引并重启加载：
 > 先运行 `./build-index`（源码 `go run ./cmd/build-index/`，Docker `docker compose exec img-api /app/build-index`），
-> 再重启服务；或删除 `storage/index/local.json` 后重启自动重建；或等 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新。
+> 再重启服务；或删除 `storage/index/local.json` 后重启自动重建；或等 `LOCAL_INDEX_REFRESH` 计划刷新。
 > 索引重建前删除的图片可能随机返回 502，新增的图片不会被选中。
 >
 > 💡 Docker 命令中的 `img-api` 是 compose 服务名（非容器名），
@@ -272,7 +272,7 @@ resources/local/
 > 不支持 `mode=redirect`。
 
 > 🗂️ 索引机制：首次启动自动扫描生成 `storage/index/local.json`，
-> 可通过 `LOCAL_INDEX_REFRESH_MINUTES` 定时自动刷新；
+> 可通过 `LOCAL_INDEX_REFRESH` 计划表自动刷新；
 > 索引中不存在的分类会直接扫目录兜底（仅新增分类即时可用，见上方生效时机说明）。
 
 ### 外部 API（source=external）

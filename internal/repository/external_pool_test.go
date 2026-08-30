@@ -47,6 +47,18 @@ func TestAPIMatchesCategory(t *testing.T) {
 	}
 }
 
+// TestPickDefaultCategory 验证 default_category 的行为：
+// 未配置时返回空字符串（表示"不指定分类"，不向上游发送字面 default）。
+func TestPickDefaultCategory(t *testing.T) {
+	p := &ExternalPool{}
+	if got := p.pickDefaultCategory(&ExternalAPIConfig{}); got != "" {
+		t.Errorf("pickDefaultCategory(unconfigured) = %q, want empty", got)
+	}
+	if got := p.pickDefaultCategory(&ExternalAPIConfig{DefaultCategory: []string{"nature"}}); got != "nature" {
+		t.Errorf("pickDefaultCategory(single) = %q, want nature", got)
+	}
+}
+
 func TestSupportsCategory(t *testing.T) {
 	pool := &ExternalPool{apis: []ExternalAPIConfig{
 		{Name: "a", Categories: []string{"cat"}},

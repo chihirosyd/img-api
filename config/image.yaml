@@ -14,7 +14,7 @@
 #   url_field     — JSON 响应中图片 URL 的字段路径（如 "urls.raw"）
 #   headers       — 自定义请求头（如 Authorization）
 #   categories       — 该 API 支持的分类列表，空或 ["all"] 表示匹配所有
-#   default_category — 默认分类（多值随机选一）；空=回退 "default"
+#   default_category — 默认分类（多值随机选一）；空=不传分类（{category} 置空、不加 category_param）
 #   category_param   — 分类对应的 query 参数名，如 "query"（可选）
 #
 # 使用示例：

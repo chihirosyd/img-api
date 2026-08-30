@@ -19,7 +19,7 @@ type ExternalAPIConfig struct {
 	URLField        string            `yaml:"url_field"`        // JSON 中 URL 字段路径
 	Categories      []string          `yaml:"categories"`       // 支持的分类（空=匹配所有，["all"]=匹配所有）
 	CategoryParam   string            `yaml:"category_param"`   // 分类对应的 query 参数名（如 "query"）
-	DefaultCategory []string          `yaml:"default_category"` // 默认分类（多值随机选一；空=回退 "default"）
+	DefaultCategory []string          `yaml:"default_category"` // 默认分类（多值随机选一；空=不指定分类，即 {category} 置空且不加 category_param）
 }
 
 // ImageConfig 对应 config/image.yaml 的顶层结构。

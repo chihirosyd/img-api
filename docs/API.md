@@ -143,7 +143,7 @@ GET /random?source=external
 | `?source=external&api=flickr` | **指定**使用 `flickr`（大小写不敏感） |
 | `?source=external&api=flickr&category=cat` | 指定 API + 指定分类 |
 
-> API 名称对应 `config/image.yaml` 中 `name` 字段。未配置分类时自动使用 `default_category`（多个随机选），都没有则回退 `"default"`。
+> API 名称对应 `config/image.yaml` 中 `name` 字段。未配置分类时自动使用 `default_category`（多个随机选）；都没有则不传分类（`{category}` 占位符置空、不加 `category_param`）。
 
 > 📌 指定的 API 名称在池中不存在时返回 404 的"API 不存在"提示页（`mode=json` 为 JSON，
 > Debug 模式下附 `available` 可用列表），而不是 500。

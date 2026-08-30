@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"img-api/internal/config"
 	"img-api/internal/logger"
 	"img-api/internal/model"
@@ -23,7 +25,8 @@ import (
 //
 // 索引机制（storage/index/local.json）：
 //   - 首次创建仓库时，若索引文件不存在则自动扫描目录生成（仅这一次）
-//   - LOCAL_INDEX_REFRESH_MINUTES > 0 时，后台定时重新扫描并刷新索引
+//   - LOCAL_INDEX_REFRESH 配置自动刷新计划（duration/@ 描述符/5 字段 cron），
+//     0 或留空 = 不自动刷新
 //   - 随机选取优先使用内存索引；索引中没有该分类时回退到直接扫描目录
 //     （兼容刚放入、尚未被索引收录的新分类）
 //
@@ -58,11 +61,13 @@ func NewLocalRepository(rootPath, indexFile string) *LocalRepository {
 		}
 	}
 
-	// 可选：定时自动刷新索引（config.C 判空便于单元测试直接构造仓库）
-	if config.C != nil && config.C.LocalIndexRefreshMinutes > 0 {
-		min := config.C.LocalIndexRefreshMinutes
-		go r.refreshLoop(time.Duration(min) * time.Minute)
-		logger.L.Info("local index auto refresh enabled", "interval_minutes", min)
+	// 可选：按计划表自动刷新索引（config.C 判空便于单元测试直接构造仓库）
+	if config.C != nil {
+		if schedule, ok := parseRefreshSchedule(config.C.LocalIndexRefresh); ok {
+			if err := r.startRefreshScheduler(schedule); err != nil {
+				logger.L.Warn("local index refresh schedule invalid, auto refresh disabled", "error", err)
+			}
+		}
 	}
 
 	return r
@@ -224,15 +229,45 @@ func (r *LocalRepository) writeIndex(images map[string][]string) error {
 	return os.Rename(tmp, r.indexFile)
 }
 
-// refreshLoop 后台定时刷新索引（由 NewLocalRepository 在配置启用时启动）。
-func (r *LocalRepository) refreshLoop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for range ticker.C {
+// startRefreshScheduler 启动 cron 调度器，按计划表刷新索引。
+// 默认本地时区：@daily 等描述符按服务器本地时间计算。
+func (r *LocalRepository) startRefreshScheduler(schedule string) error {
+	c := cron.New()
+	if _, err := c.AddFunc(schedule, func() {
 		if err := r.refreshIndex(); err != nil {
 			logger.L.Warn("scheduled local index refresh failed", "error", err)
 		}
+	}); err != nil {
+		return err
 	}
+	c.Start()
+	logger.L.Info("local index auto refresh enabled", "schedule", schedule)
+	return nil
+}
+
+// parseRefreshSchedule 将配置值归一化为 cron 表达式。
+//
+// 支持格式（空或 0 = 不自动刷新）：
+//   - Go duration（如 30s / 30m / 24h / 168h；单位仅 ns/µs/ms/s/m/h，
+//     天写 24h、周写 168h，月/年长度不固定需用 @ 描述符或 cron）
+//   - @ 描述符（@hourly / @daily / @weekly / @monthly / @yearly / @every 30m）
+//   - 标准 5 字段 cron（如 0 3 * * * = 每天 03:00）
+//
+// 第二个返回值表示是否启用（false = 关闭自动刷新）。
+func parseRefreshSchedule(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "0" {
+		return "", false
+	}
+	// Go duration → @every（30s / 30m / 24h / 168h 等；保留用户原始写法，比 Duration.String() 更易读）
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d <= 0 {
+			return "", false // 0s / 负值 → 视为关闭
+		}
+		return "@every " + raw, true
+	}
+	// 其余原样交给 cron 解析（@daily / @weekly / 5 字段 cron 等）
+	return raw, true
 }
 
 // scanImages 列出目录下的所有图片文件（仅当前层，不递归子目录）。

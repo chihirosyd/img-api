@@ -175,9 +175,6 @@ docker compose restart
 > `resources/txt/{pc,pe}/default.txt`、`resources/local/{pc,pe}/default/` 目录，直接编辑即可。
 > 图库文件直接放在宿主机对应目录即可（如 `resources/txt/pc/default.txt`），
 > 外部 API 池直接编辑自动生成的 `config/image.yaml`（含 picsum / flickr / unsplash 注释模板）。
-> 旧版本升级：仅当沿用旧版 compose 的 `./configs` 挂载时，`configs/image.yaml`
-> 才会在下次启动时自动复制迁移到 `config/image.yaml`；已按新版 compose 升级的用户
-> 需手动 `cp configs/image.yaml config/image.yaml`。
 > 镜像更新：`docker compose pull && docker compose up -d`。
 
 > 🛠️ 开发者如需从源码构建：在 `docker-compose.yml` 中注释掉 `image:` 行、
@@ -191,7 +188,7 @@ docker compose restart
 > ```
 > 如需外部 API 池，编辑 `config/image.yaml` 并重启。
 > 本地图片索引（`storage/index/local.json`）首启自动生成，
-> 可通过 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新。
+> 可通过 `LOCAL_INDEX_REFRESH` 计划表自动刷新（Go duration / @daily 等描述符 / 5 字段 cron）。
 > 修改 `.env` 配置后执行 `docker compose restart` 生效。
 
 ### 启用 Redis（可选）
@@ -304,7 +301,6 @@ Windows：下载新 zip 覆盖解压到原目录（保留 `.env` 与图库），
 
 ### 跨版本注意
 
-- 从 v1.0.x 升级到 v1.1.0+：旧 `configs/image.yaml` 会在首次启动时自动迁移到 `config/image.yaml`；
 - 每次升级前建议查看 [CHANGELOG.md](../CHANGELOG.md) 了解变更内容。
 
 ---
@@ -341,9 +337,12 @@ go vet ./...
 go get -u ./... && go mod tidy
 ```
 
-> 💡 Windows 本地 `go vet ./...` 若因 GUI 的 go-gl 依赖报
-> `build constraints exclude all Go files`，先 `set CGO_ENABLED=1` 再跑；
-> CI 在 Linux 上不受影响（GUI 包仅 Windows 构建）。
+> 💡 Windows 本地跑 `go vet ./...` / `go test -race ./...` 需要启用 CGO：
+> 原因是 GUI 依赖 fyne 的 GL 驱动（go-gl），CGO 关闭时会报
+> `build constraints exclude all Go files`。
+> 处理：先设置 `$env:CGO_ENABLED="1"`（PowerShell）或 `set CGO_ENABLED=1`（CMD），
+> 并确保已安装 C 编译器（如 MSYS2 的 mingw-w64 gcc）且路径可达，再执行。
+> CI 在 Linux 上无此问题：`cmd/gui` 带 `//go:build windows` 标记，Linux 下不参与编译。
 
 ### 发布步骤
 

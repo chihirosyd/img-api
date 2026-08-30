@@ -75,7 +75,9 @@ func LoadExternalPool(imgCfg *config.ImageConfig) (*ExternalPool, error) {
 // Random 从外部 API 池获取图片。
 //
 // apiName 为空时从所有 API 中随机选取；非空时按名称精确匹配（大小写不敏感）。
-// category 为空时使用 API 的 default_category（多值随机选一），仍为空则回退 "default"。
+// category 为空时使用 API 的 default_category（多值随机选一）；
+// 未配置则不指定分类——{category} 占位符替换为空、不加 category_param，
+// 避免向上游 API 传字面 "default" 引发冲突。
 // deviceType 决定 {width}/{height} 占位符：PC=800x600, PE=400x800。
 func (p *ExternalPool) Random(ctx context.Context, apiName, category string, deviceType model.DeviceType) (*model.Image, error) {
 	if len(p.apis) == 0 {
@@ -125,10 +127,11 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 	reqURL := strings.ReplaceAll(api.URL, "{width}", width)
 	reqURL = strings.ReplaceAll(reqURL, "{height}", height)
 	// 分类可能含中文/空格等字符，需按路径片段转义后替换占位符
+	// （未指定分类时 effectiveCategory 为空，占位符替换为空串）
 	reqURL = strings.ReplaceAll(reqURL, "{category}", url.PathEscape(effectiveCategory))
 
-	// 如果配置了 category_param，追加 query 参数
-	if api.CategoryParam != "" && effectiveCategory != "" && effectiveCategory != "default" {
+	// 如果配置了 category_param，追加 query 参数（未指定分类时不追加）
+	if api.CategoryParam != "" && effectiveCategory != "" {
 		if strings.Contains(reqURL, "?") {
 			reqURL += "&"
 		} else {
@@ -155,10 +158,10 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 }
 
 // pickDefaultCategory 从 API 的默认分类列表中随机选一个。
-// 未配置时回退到 "default"。
+// 未配置时返回空字符串（表示"不指定分类"）。
 func (p *ExternalPool) pickDefaultCategory(api *ExternalAPIConfig) string {
 	if len(api.DefaultCategory) == 0 {
-		return "default"
+		return ""
 	}
 	if len(api.DefaultCategory) == 1 {
 		return api.DefaultCategory[0]

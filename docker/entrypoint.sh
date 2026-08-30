@@ -32,10 +32,6 @@ fi
 # ── 第 3 步：兜底生成 config/image.yaml ──
 # compose 挂载 ./config 时会覆盖镜像内置的配置目录，首次启动宿主机侧为空目录；
 # 这里把内置示例复制出来，保证管理员总能找到 image.yaml 进行编辑
-# 兼容旧版本：老部署的 configs/image.yaml（旧挂载）自动复制迁移到 config/image.yaml
-if [ -f /app/configs/image.yaml ] && [ ! -f /app/config/image.yaml ]; then
-    cp /app/configs/image.yaml /app/config/image.yaml 2>/dev/null || true
-fi
 if [ ! -f /app/config/image.yaml ]; then
     cp /app/config.default/image.yaml /app/config/image.yaml 2>/dev/null || true
 fi

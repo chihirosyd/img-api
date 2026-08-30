@@ -69,3 +69,37 @@ func TestLocalRepositoryIndexAndRandom(t *testing.T) {
 		t.Fatal("expected error for missing category")
 	}
 }
+
+// TestParseRefreshSchedule 验证刷新计划表的归一化：整数分钟、Go duration、
+// @ 描述符、5 字段 cron 原样透传；空/0 关闭。
+func TestParseRefreshSchedule(t *testing.T) {
+	cases := []struct {
+		raw      string
+		want     string
+		wantOn   bool
+	}{
+		{"", "", false},
+		{"0", "", false},
+		{"0s", "", false},
+		{"-30m", "", false},
+		{"30s", "@every 30s", true},
+		{"30m", "@every 30m", true}, // 分钟
+		{"24h", "@every 24h", true}, // 天（duration 无 d 单位，写 24h）
+		{"168h", "@every 168h", true}, // 一周
+		{"@hourly", "@hourly", true},
+		{"@daily", "@daily", true},
+		{"@weekly", "@weekly", true},
+		{"@monthly", "@monthly", true},
+		{"@yearly", "@yearly", true},
+		{"0 3 * * *", "0 3 * * *", true},      // 每天 03:00
+		{"30 4 * * 1", "30 4 * * 1", true},    // 每周一 04:30
+		{"bad !!! expr", "bad !!! expr", true}, // 非法表达式交给 cron 校验（AddFunc 报错则禁用）
+	}
+	for _, c := range cases {
+		got, on := parseRefreshSchedule(c.raw)
+		if got != c.want || on != c.wantOn {
+			t.Errorf("parseRefreshSchedule(%q) = (%q, %v), want (%q, %v)",
+				c.raw, got, on, c.want, c.wantOn)
+		}
+	}
+}

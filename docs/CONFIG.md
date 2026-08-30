@@ -42,13 +42,23 @@
 | `DEFAULT_SOURCE` | string | `txt` | 默认图片来源：`txt` / `local` / `external` |
 | `TXT_DEFAULT_CATEGORY` | string | — | txt 渠道默认分类：请求不带 `category`（或显式传 `default`）时使用。留空 = 内置 `default`（`default.txt`） |
 | `LOCAL_DEFAULT_CATEGORY` | string | — | local 渠道默认分类：请求不带 `category`（或显式传 `default`）时使用。留空 = 内置 `default`（`default` 目录） |
-| `LOCAL_INDEX_REFRESH_MINUTES` | int | `0` | 本地图片索引（`storage/index/local.json`）自动刷新间隔（分钟）。`0`=仅在首次启动时生成一次 |
+| `LOCAL_INDEX_REFRESH` | string | — | 本地图片索引（`storage/index/local.json`）自动刷新计划，`0`/空=仅首次启动生成（三种写法见下方速查表） |
+
+> 💡 `LOCAL_INDEX_REFRESH` 三种写法**任选其一**（每次只填一个值）：
+>
+> | 写法 | 示例值 | 说明 |
+> |------|------|------|
+> | Go duration | `30s` / `30m` / `2h` / `24h` / `168h` | 单位仅 `ns`/`µs`/`ms`/`s`/`m`/`h`；天写 `24h`、周写 `168h` |
+> | 描述符 | `@hourly` / `@daily` / `@weekly` / `@monthly` / `@yearly` | 按自然周期，服务器本地时区 |
+> | 5 字段 cron | `0 3 * * *` / `0 2 1 * *` | 每天 03:00 / 每月 1 号 02:00 |
+>
+> 示例：`LOCAL_INDEX_REFRESH=@daily`、`LOCAL_INDEX_REFRESH=0 3 * * *`
 
 > 📌 本地图片索引说明：首次启动时若 `storage/index/local.json` 不存在会自动生成。
-> 之后按 `LOCAL_INDEX_REFRESH_MINUTES` 定时重新扫描刷新。
+> 之后按 `LOCAL_INDEX_REFRESH` 计划表重新扫描刷新。
 > 新增分类（新目录）即时可用（索引未命中时直接扫描目录兜底）；
 > 已有分类中增删图片需重建索引并重启加载（`build-index` 后重启、删除索引文件后重启，
-> 或配置 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新）——仅重启服务不会重新扫描目录，
+> 或配置 `LOCAL_INDEX_REFRESH` 计划刷新）——仅重启服务不会重新扫描目录，
 > 重建前删除的图片可能随机返回 502，新增的图片不会被选中。
 >
 > 🔧 **手动重建 local.json（步骤）**：
@@ -62,7 +72,7 @@
 >    - Docker：`docker compose exec img-api /app/build-index`
 > 3. 让服务加载新索引（二选一）：
 >    - 重启服务（Docker：`docker compose restart`）
->    - 等 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新（需已配置 > 0）
+>    - 等 `LOCAL_INDEX_REFRESH` 计划刷新（需已配置）
 >
 > 也可以直接删除 `storage/index/local.json` 后重启，启动时会自动重建。
 >
@@ -98,10 +108,10 @@
 |------|------|:--:|------|
 | `name` | string | 是 | API 标识（`?api=xxx` 匹配此值） |
 | `url` | string | 是 | 请求模板，支持 `{width}` `{height}` `{category}` 占位符 |
-| `response_type` | string | — | `redirect`（默认）/ `json` |
+| `response_type` | string | — | `redirect`（默认）/ `json`：描述**上游 API 怎么返回图片**（302 重定向 / JSON 里嵌 URL）。注意与请求参数 `mode`（最终怎么把图给访客）无关——`mode=image`（服务端代理直出）在两种 `response_type` 下都可用 |
 | `url_field` | string | — | JSON 模式时提取 URL 的字段路径（如 `urls.raw`） |
 | `categories` | []string | — | 支持的分类列表，空=匹配所有 |
-| `default_category` | []string | — | 默认分类（多值随机选一）；空=回退 `default` |
+| `default_category` | []string | — | 默认分类（多值随机选一）；空=不传分类（`{category}` 占位符置空、不加 `category_param`，避免上游收到字面 `default`） |
 | `category_param` | string | — | 分类对应的 query 参数名（如 `query`） |
 | `headers` | map | — | 自定义请求头（如 `Authorization`） |
 
@@ -150,8 +160,6 @@ HALF_OPEN ──任一失败──→ OPEN
 
 ## 版本
 
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
 > 💡 版本号由代码内置（随发布自动更新，`cmd/setversion` 与 CHANGELOG 同步），
 > 显示于首页与 `/health`；如需临时覆盖可设置环境变量 `APP_VERSION`。
 
@@ -164,7 +172,7 @@ HALF_OPEN ──任一失败──→ OPEN
 | TXT 增删 URL（未启用 Redis） | 自动感知，即时生效（mtime 快照校验） |
 | TXT 增删 URL（已同步 Redis） | 需重新运行 sync-redis（源码 `go run ./cmd/sync-redis/`，二进制 `./sync-redis`） |
 | local 新增分类（新目录） | 即时 |
-| local 已有分类中增删图片 | 重建索引后重启加载：二进制 `./build-index` / 源码 `go run ./cmd/build-index/` / Docker `docker compose exec img-api /app/build-index`，再重启服务；或删除 `storage/index/local.json` 后重启自动重建；或配置 `LOCAL_INDEX_REFRESH_MINUTES` 定时刷新。仅重启服务不会重扫目录；重建前删除的图片可能随机返回 502，新增的图片不会被选中 |
+| local 已有分类中增删图片 | 重建索引后重启加载：二进制 `./build-index` / 源码 `go run ./cmd/build-index/` / Docker `docker compose exec img-api /app/build-index`，再重启服务；或删除 `storage/index/local.json` 后重启自动重建；或配置 `LOCAL_INDEX_REFRESH` 计划刷新。仅重启服务不会重扫目录；重建前删除的图片可能随机返回 502，新增的图片不会被选中 |
 | 分类清单（提示页可用列表 / 多分类筛选） | 30 秒快照缓存：新建分类最迟 30 秒纳入清单；单分类直接取图不受影响、即时生效 |
 | `config/image.yaml`（外部 API） | 重启服务 |
 | `.env` 配置 | 重启服务 |
