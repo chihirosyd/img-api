@@ -158,6 +158,26 @@ GET /health              → 完整状态与运行时统计
 
 ---
 
+## 🚢 发布新版本（维护者）
+
+完整的发布流程、前置检查清单与 CI 时序图见
+[docs/DEPLOY.md → GitHub Actions](docs/DEPLOY.md#github-actions)，关键三步：
+
+```bash
+# 注：vX.Y.Z 是版本占位符，请替换为实际版本号（如 v1.5.0）
+# 1. 更新 CHANGELOG 后同步版本号
+go run ./cmd/setversion
+# 2. 升级依赖并提交（本地需 Go 1.26+），先推 main
+go get -u ./... && go mod tidy && git add -A && git commit -m "release vX.Y.Z"
+git push origin main
+# 3. 等 Update go.sum 工作流跑完，git pull --rebase 后打 tag
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+> 💡 tag 推送后 CI 自动完成检查、5 平台编译、Release 与 GHCR 镜像发布。
+
+---
+
 ## 🏗️ 项目结构
 
 ```
@@ -169,7 +189,7 @@ img-api/
 │   ├── health-check/           # 健康检查 CLI
 │   ├── sync-redis/             # TXT → Redis 同步
 │   ├── genicon/                # exe/托盘图标生成器
-│   └── setversion/             # CHANGELOG → config.go / .env.example 版本同步
+│   └── setversion/             # CHANGELOG → config.go 版本同步
 ├── internal/                   # 核心源码
 │   ├── config/                 # 配置中心
 │   ├── model/                  # 数据模型

@@ -311,17 +311,63 @@ Windows：下载新 zip 覆盖解压到原目录（保留 `.env` 与图库），
 
 ## GitHub Actions
 
-推送 tag 自动编译 5 平台二进制并发布 Release：
+推送 tag 自动编译 5 平台二进制并发布 Release。依赖以仓库锁定的
+`go.mod` / `go.sum` 为准：Release 二进制、Docker 镜像与 CI 检查使用同一套版本
+（依赖升级只在本地或 `Update go.sum` 兜底工作流中进行，构建环节不再现场升级）。
+
+### 发布流程
+
+```mermaid
+flowchart TD
+    A[本地开发完成] --> B[更新 CHANGELOG<br/>go run ./cmd/setversion<br/>go get -u ./... && go mod tidy]
+    B --> C[git push origin main]
+    C --> D{Update go.sum 工作流}
+    D -->|本地已升级：通常空跑，无新提交| E[git pull --rebase]
+    D -->|兜底：依赖有更新则自动提交 go.mod / go.sum| E
+    E --> F[git tag vX.Y.Z<br/>git push origin vX.Y.Z]
+    F --> G[release.yml：check 全绿后编译 5 平台并发布 Release]
+    F --> H[docker.yml：构建多架构镜像推送 GHCR]
+    G -.依赖按 tag 锁定.-> F
+    H -.依赖按 tag 锁定.-> F
+```
+
+### 发布前本地检查清单（防止 CI 红灯）
 
 ```bash
-# 1. 更新 CHANGELOG.md（[未发布] 段改名为 ## [x.y.z] - 日期）
-# 2. 同步版本号到 config.go 默认值与 .env.example（唯一来源是 CHANGELOG）
-go run ./cmd/setversion
-# 3. 提交并打 tag 触发发布
-git add -A && git commit -m "release v1.4.0"
-git tag v1.4.0
-git push origin main v1.4.0
+# 单测与静态检查（CI check 同款）
+go test ./...
+go vet ./...
+# 依赖升级并整理（产物与仓库锁定依赖保持一致；之后 gosum 通常空跑）
+go get -u ./... && go mod tidy
 ```
+
+> 💡 Windows 本地 `go vet ./...` 若因 GUI 的 go-gl 依赖报
+> `build constraints exclude all Go files`，先 `set CGO_ENABLED=1` 再跑；
+> CI 在 Linux 上不受影响（GUI 包仅 Windows 构建）。
+
+### 发布步骤
+
+```bash
+# 注：下面命令中的 vX.Y.Z 是版本占位符，请替换为实际版本号（如 v1.5.0）
+# 1. 更新 CHANGELOG.md（[未发布] 段改名为 ## [x.y.z] - 日期）
+# 2. 同步版本号到代码内置默认值（唯一来源是 CHANGELOG）
+go run ./cmd/setversion
+# 3. 提交（依赖已在发布前升级）
+git add -A && git commit -m "release vX.Y.Z"
+# 4. 先推 main：Update go.sum 工作流会兜底检查 go.mod/go.sum（通常空跑无新提交）
+git push origin main
+# 5. 等 Update go.sum 跑完后拉取，再打 tag 触发发布
+git pull --rebase
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+> 💡 `git pull --rebase` 的作用：把远端 `Update go.sum` 可能产生的自动提交
+> 拉到本地，并让本地提交重放到它之上（历史保持直线，不产生 merge 提交），
+> 这样 tag 才会打在最新依赖之上。若 gosum 空跑（无新提交），该命令就是空操作。
+
+> ⚠️ 不要跳过第 4、5 步（把 main 和 tag 一起推）：tag 应落在
+> `Update go.sum` 兜底提交之后，否则本次 Release 的依赖可能比仓库落后一个版本。
 
 产物（每个平台一个 zip：Linux/macOS 含 4 个二进制，Windows 另含图形控制面板）：
 - `img-api-linux-amd64.zip`

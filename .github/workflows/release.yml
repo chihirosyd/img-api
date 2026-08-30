@@ -12,6 +12,11 @@ on:
 permissions:
   contents: write
 
+# 同一 ref 的并发运行串行执行：main push 与 gosum 自动提交触发的多轮 check 不互相覆盖
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ── 静态检查 & 编译验证 ──
   check:
@@ -24,10 +29,9 @@ jobs:
           go-version: "1.26"
 
       - name: Ensure module files are tidy
-        # 与 gosum.yml 一致的升级策略：先升级全部依赖再 tidy，保证各 job 依赖版本一致
-        run: |
-          go get -u ./...
-          go mod tidy
+        # 依赖以仓库锁定的 go.mod / go.sum 为准（升级由本地 go get -u 完成、
+        # gosum.yml 兜底）：检查、Release 产物、Docker 镜像使用同一套锁定版本
+        run: go mod tidy
 
       - name: Run go vet
         run: go vet ./...

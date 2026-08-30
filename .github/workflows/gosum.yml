@@ -1,4 +1,4 @@
-# 自动升级依赖并提交 go.mod / go.sum
+# 自动升级依赖并提交 go.mod / go.sum（依赖升级的唯一 CI 入口）
 #
 # 说明：本地已有 Go 环境（go get -u ./... && go mod tidy 可直接维护依赖），
 # 本工作流作为兜底：push 的 go.mod 变更若未附带最新 go.sum，
@@ -6,6 +6,9 @@
 #   1. go get -u ./... 将全部依赖升级到最新版本
 #   2. go mod tidy 重新整理依赖并生成 go.sum
 #   3. 自动提交 go.mod / go.sum
+#
+# Dockerfile 与 release.yml 均不再现场升级依赖（以仓库锁定版本为准），
+# 发布流程为"先推 main、等本工作流跑完、再打 tag"（详见 docs/DEPLOY.md）。
 name: Update go.sum
 
 on:
@@ -17,6 +20,11 @@ on:
 
 permissions:
   contents: write
+
+# 同一 ref 的并发运行串行执行：自动提交与用户 push 竞态时避免互相覆盖
+concurrency:
+  group: gosum-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   update-gosum:

@@ -2,6 +2,14 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [未发布]
+
+### 优化
+
+- 统一 CI、Docker 构建与发布流程的依赖来源：依赖以仓库锁定的 `go.mod` / `go.sum` 为准（Dockerfile 不再现场 `go get -u`，release.yml check 只 `go mod tidy`），Release 二进制、镜像与检查三者同源
+- 发布流程改为"先推 main、等 Update go.sum 兜底跑完、再打 tag"；两个工作流增加同 ref 并发串行保护
+- docs/DEPLOY.md 发布章节补充流程图、发布前本地检查清单；README 新增"发布新版本"指引
+
 ## [1.4.4] - 2026-08-30
 
 ### 新增

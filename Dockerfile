@@ -8,9 +8,10 @@ RUN apk add --no-cache git
 
 # 复制全部源码（含 go.mod），一次性编译所有入口
 COPY . .
-# 与 release.yml 的 check 任务保持一致：先升级全部依赖再 tidy，
-# 保证镜像内的依赖版本与 Release 二进制一致
-RUN go get -u ./... && go mod tidy && \
+# 依赖以仓库锁定的 go.mod / go.sum 为准（不现场升级）：
+# 镜像与 Release 二进制、CI 检查使用同一套锁定版本；
+# 依赖升级由发布前本地 go get -u + tidy 完成（gosum.yml 兜底）
+RUN go mod download && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o img-api ./cmd/server/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o build-index ./cmd/build-index/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o sync-redis ./cmd/sync-redis/ && \
