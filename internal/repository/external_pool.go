@@ -78,7 +78,8 @@ func LoadExternalPool(imgCfg *config.ImageConfig) (*ExternalPool, error) {
 // category 为空时使用 API 的 default_category（多值随机选一）；
 // 未配置则不指定分类——{category} 占位符替换为空、不加 category_param，
 // 避免向上游 API 传字面 "default" 引发冲突。
-// deviceType 决定 {width}/{height} 占位符：PC=800x600, PE=400x800。
+// deviceType 决定 {width}/{height} 占位符（PC=800x600, PE=400x800），
+// 同时决定上游请求的 User-Agent（按 UA 自适应的 API 据此返回横/竖屏版本）。
 func (p *ExternalPool) Random(ctx context.Context, apiName, category string, deviceType model.DeviceType) (*model.Image, error) {
 	if len(p.apis) == 0 {
 		return nil, model.ErrExternalNotConfigured
@@ -151,10 +152,43 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 	// 根据响应类型处理
 	switch api.ResponseType {
 	case "json":
-		return p.fetchJSON(ctx, *api, reqURL, widthI, heightI)
+		return p.fetchJSON(ctx, *api, reqURL, widthI, heightI, deviceType)
 	default:
-		return p.fetchRedirect(ctx, *api, reqURL, effectiveCategory, widthI, heightI)
+		return p.fetchRedirect(ctx, *api, reqURL, effectiveCategory, widthI, heightI, deviceType)
 	}
+}
+
+// 设备对应的代表性 User-Agent。部分按 UA 自适应横竖屏的上游依赖请求方的
+// User-Agent 判断返回 PC 还是手机版图片；Go 默认 UA（Go-http-client/1.1）
+// 会被上游视为"其他设备"，恒返回电脑版图片，因此这里按设备类型注入浏览器 UA。
+const (
+	desktopUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	mobileUserAgent  = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+// userAgentFor 返回设备类型对应的代表性 User-Agent。
+func userAgentFor(deviceType model.DeviceType) string {
+	if deviceType == model.DevicePE {
+		return mobileUserAgent
+	}
+	return desktopUserAgent
+}
+
+// buildRequestHeaders 拷贝自定义请求头，并在未显式配置 User-Agent 时按设备类型
+// 注入代表性 UA，使按 UA 自适应的上游返回对应版本图片（已配置则优先使用配置值）。
+func buildRequestHeaders(custom map[string]string, deviceType model.DeviceType) map[string]string {
+	headers := make(map[string]string, len(custom)+1)
+	hasUA := false
+	for k, v := range custom {
+		if strings.EqualFold(k, "User-Agent") {
+			hasUA = true
+		}
+		headers[k] = v
+	}
+	if !hasUA {
+		headers["User-Agent"] = userAgentFor(deviceType)
+	}
+	return headers
 }
 
 // pickDefaultCategory 从 API 的默认分类列表中随机选一个。
@@ -236,12 +270,14 @@ func (p *ExternalPool) APISupportsCategory(name, category string) bool {
 // fetchRedirect 获取重定向后的最终图片 URL。
 // 优先用 HEAD（省流量）；部分图床不支持 HEAD（返回 405 等），
 // 失败时自动降级为 GET 重试一次（不读取响应体）。
-// api.Headers 会附加到请求（与 fetchJSON 一致，如 Authorization）。
+// api.Headers 会附加到请求（与 fetchJSON 一致，如 Authorization）；
+// 未配置 User-Agent 时按 deviceType 注入（供按 UA 自适应的上游使用）。
 // category 为实际使用的分类（写入返回结果，而非固定的 "external"）。
-func (p *ExternalPool) fetchRedirect(ctx context.Context, api ExternalAPIConfig, url, category string, width, height int) (*model.Image, error) {
-	finalURL, err := p.finalURL(ctx, api.Headers, http.MethodHead, url)
+func (p *ExternalPool) fetchRedirect(ctx context.Context, api ExternalAPIConfig, url, category string, width, height int, deviceType model.DeviceType) (*model.Image, error) {
+	headers := buildRequestHeaders(api.Headers, deviceType)
+	finalURL, err := p.finalURL(ctx, headers, http.MethodHead, url)
 	if err != nil {
-		finalURL, err = p.finalURL(ctx, api.Headers, http.MethodGet, url)
+		finalURL, err = p.finalURL(ctx, headers, http.MethodGet, url)
 	}
 	if err != nil {
 		return nil, err
@@ -283,17 +319,18 @@ func (p *ExternalPool) finalURL(ctx context.Context, headers map[string]string, 
 }
 
 // fetchJSON 发送 GET 请求并解析 JSON 响应体提取图片 URL。
-// 支持自定义请求头（如 Unsplash 的 Authorization）。
+// 支持自定义请求头（如 Unsplash 的 Authorization）；
+// 未配置 User-Agent 时按 deviceType 注入（供按 UA 自适应的上游使用）。
 // 响应体限制 10MB，防止 OOM。
-func (p *ExternalPool) fetchJSON(ctx context.Context, api ExternalAPIConfig, url string, width, height int) (*model.Image, error) {
+func (p *ExternalPool) fetchJSON(ctx context.Context, api ExternalAPIConfig, url string, width, height int, deviceType model.DeviceType) (*model.Image, error) {
 	// NewRequestWithContext 第 4 个参数为请求体（GET 无 body，传 nil）
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("external GET request: %w", err)
 	}
 
-	// 添加自定义请求头
-	for k, v := range api.Headers {
+	// 添加自定义请求头（未配置 User-Agent 时按设备类型注入）
+	for k, v := range buildRequestHeaders(api.Headers, deviceType) {
 		req.Header.Set(k, v)
 	}
 

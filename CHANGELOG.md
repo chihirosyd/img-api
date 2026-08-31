@@ -2,6 +2,18 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [未发布]
+
+## [1.4.8] - 2026-08-31
+
+### 修复
+
+- 外部 API 上游请求按设备类型自动携带对应的 User-Agent（手机 UA / 桌面 UA），使按 UA 自适应横竖屏的 API 能返回对应版本图片（此前使用 Go 默认 UA，恒被上游识别为电脑端返回横图）；`headers` 中显式配置的 `User-Agent` 优先
+
+### 文档
+
+- 端口相关说明完善：`APP_PORT`/`APP_HOST` 注释、compose 端口映射注释、DEPLOY 换宿主机端口提示、Nginx `proxy_pass` 与防火墙示例的同步提醒
+
 ## [1.4.7] - 2026-08-30
 
 ### 新增

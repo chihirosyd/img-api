@@ -1,6 +1,10 @@
 package repository
 
-import "testing"
+import (
+	"testing"
+
+	"img-api/internal/model"
+)
 
 func TestExtractNested(t *testing.T) {
 	data := map[string]any{
@@ -21,6 +25,38 @@ func TestExtractNested(t *testing.T) {
 	// 自动探测常见字段名
 	if got := extractNested(data, ""); got != "https://example.com/a.jpg" {
 		t.Errorf("extractNested(auto) = %q", got)
+	}
+}
+
+// TestUserAgentFor 验证设备类型对应注入的 User-Agent：PE 返回手机 UA，其余返回桌面 UA。
+func TestUserAgentFor(t *testing.T) {
+	if got := userAgentFor(model.DevicePE); got != mobileUserAgent {
+		t.Errorf("userAgentFor(pe) = %q, want mobile UA", got)
+	}
+	if got := userAgentFor(model.DevicePC); got != desktopUserAgent {
+		t.Errorf("userAgentFor(pc) = %q, want desktop UA", got)
+	}
+}
+
+// TestBuildRequestHeaders 验证请求头构建：无 User-Agent 时按设备注入；
+// 已显式配置（大小写不敏感）时优先保留配置值。
+func TestBuildRequestHeaders(t *testing.T) {
+	// 未配置 UA → 注入手机 UA
+	h := buildRequestHeaders(map[string]string{"Authorization": "Bearer x"}, model.DevicePE)
+	if got := h["User-Agent"]; got != mobileUserAgent {
+		t.Errorf("buildRequestHeaders(pe, no UA) = %q, want mobile UA", got)
+	}
+	if h["Authorization"] != "Bearer x" {
+		t.Errorf("buildRequestHeaders lost Authorization header")
+	}
+
+	// 已配置 UA（小写键）→ 保留配置值，不覆盖
+	h = buildRequestHeaders(map[string]string{"user-agent": "custom-ua/1.0"}, model.DevicePC)
+	if got := h["user-agent"]; got != "custom-ua/1.0" {
+		t.Errorf("buildRequestHeaders(custom UA) = %q, want custom-ua/1.0", got)
+	}
+	if _, ok := h["User-Agent"]; ok {
+		t.Error("buildRequestHeaders should not add User-Agent when already configured (case-insensitive)")
 	}
 }
 

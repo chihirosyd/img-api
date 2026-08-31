@@ -15,6 +15,8 @@ services:
         max-size: "10m"
         max-file: "3"
     ports:
+      # 宿主机端口:容器端口。左侧宿主机端口可改（如 9090:8080，8080 被占用时推荐），
+      # 右侧须与 .env 的 APP_PORT 一致；改左侧后记得同步反代 proxy_pass 与防火墙放行
       - "8080:8080"
     healthcheck:
       test: ["CMD", "/app/health-check", "-url", "http://localhost:8080"]

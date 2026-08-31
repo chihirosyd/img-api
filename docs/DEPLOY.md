@@ -140,6 +140,7 @@ Register-ScheduledTask -TaskName "img-api" -Action $action -Trigger $trigger -Ru
 
 ```powershell
 New-NetFirewallRule -DisplayName "img-api 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+# 若改过监听端口（APP_PORT），把上面两处 8080 同步为新端口
 ```
 
 > 公网直接暴露更推荐 Docker 部署或前方反代（见下方 Nginx 章节）。
@@ -169,6 +170,11 @@ cat config/.env
 vim config/.env
 docker compose restart
 ```
+
+> 🔌 换宿主机端口（8080 被占用时）：把 compose 里 `ports` 的**左侧**改成新端口
+> （如 `"9090:8080"`），再 `docker compose up -d` 重建即可；容器内仍监听 8080，
+> `.env` 无需改动。改后记得同步三处：外部访问用新端口、Nginx 反代的
+> `proxy_pass` 指向新端口、防火墙放行规则改为新端口。
 
 > 📁 首次启动会自动创建 `config/`、`resources/`、`storage/` 等挂载目录，
 > 并自动生成 `config/.env`、`config/image.yaml`（内置注释示例）以及图库骨架：
@@ -211,6 +217,7 @@ docker compose exec img-api /app/sync-redis
 
 ```bash
 docker build -t img-api .
+# 左侧 8080 可换成宿主机实际端口；右侧为容器内部端口，须与 .env 的 APP_PORT 一致
 docker run -d -p 8080:8080 \
   -v $(pwd)/.env:/app/.env \
   -v $(pwd)/config:/app/config \
@@ -236,6 +243,7 @@ server {
     if ($invalid_referer) { return 403; }
 
     location / {
+        # 若 compose 宿主机端口改过，这里同步为新端口（默认 8080）
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
