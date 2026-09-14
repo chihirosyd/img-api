@@ -22,10 +22,25 @@ func TestScanLocalImages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	images := ScanLocalImages(root)
+	images, err := ScanLocalImages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	files := images["pc/default"]
 	if len(files) != 1 || files[0] != filepath.Join(dir, "a.jpg") {
 		t.Fatalf("ScanLocalImages = %v, want only a.jpg", images)
+	}
+}
+
+// TestScanLocalImagesMissingRoot 根目录不存在视为"暂无图片"（首次启动正常场景），
+// 返回空索引 + nil 错误（允许写空索引，而非视为扫描失败）。
+func TestScanLocalImagesMissingRoot(t *testing.T) {
+	images, err := ScanLocalImages(filepath.Join(t.TempDir(), "not-exist"))
+	if err != nil {
+		t.Fatalf("missing root should not be an error, got %v", err)
+	}
+	if len(images) != 0 {
+		t.Fatalf("missing root should return empty index, got %v", images)
 	}
 }
 
@@ -67,6 +82,40 @@ func TestLocalRepositoryIndexAndRandom(t *testing.T) {
 	// 缺失分类 → 报错（不是 panic）
 	if _, err := repo.Random(ctx, "missing", model.DevicePC); err == nil {
 		t.Fatal("expected error for missing category")
+	}
+}
+
+// TestLocalRepositoryFallbackScanRecursive 回归 L6：索引未命中的兜底扫描
+// 与索引扫描统一为递归——新分类目录内的子文件夹图片也应被选中。
+func TestLocalRepositoryFallbackScanRecursive(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "pc", "default"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pc", "default", "a.jpg"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	indexFile := filepath.Join(t.TempDir(), "local.json")
+	repo := NewLocalRepository(root, indexFile)
+
+	// 索引建立后再新增分类（索引未命中 → 走 scanImages 兜底），
+	// 图片放在子文件夹里（此前仅当前层的实现会漏掉）
+	sub := filepath.Join(root, "pc", "newcat", "sub")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "b.jpg"), []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	img, err := repo.Random(ctx, "newcat", model.DevicePC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.URL != filepath.Join(sub, "b.jpg") {
+		t.Fatalf("URL = %q, want subdir b.jpg (recursive fallback scan)", img.URL)
 	}
 }
 

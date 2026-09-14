@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os/exec"
 	"path/filepath"
@@ -30,8 +31,10 @@ import (
 type Server struct {
 	rootPath string
 	httpSrv  *http.Server
+	svc      *service.RandomService // 业务服务（Shutdown 时停止仓库后台任务）
 
-	redisCloser io.Closer // Redis 连接（停止时关闭；nil 表示内存缓存）
+	cacheCloser io.Closer  // 缓存连接（停止时关闭；Redis 客户端或内存缓存的清理协程）
+	limiterStop func()     // 限流器后台清理协程停止函数（nil=未启用）
 
 	running atomic.Bool
 }
@@ -62,18 +65,22 @@ func NewServer(rootPath string) (*Server, error) {
 
 	// ── 初始化缓存（Redis → 内存降级）──
 	var c cache.Cache
-	var redisCloser io.Closer
+	var cacheCloser io.Closer
 	if config.C.IsRedisEnabled() {
 		redisCache, err := cache.NewRedisCache(config.C.RedisAddr, config.C.RedisPassword, config.C.RedisDB)
 		if err != nil {
 			logger.L.Warn("redis unavailable, falling back to memory cache", "error", err)
-			c = cache.NewMemoryCache()
+			mc := cache.NewMemoryCache()
+			c = mc
+			cacheCloser = mc
 		} else {
 			c = redisCache
-			redisCloser = redisCache
+			cacheCloser = redisCache
 		}
 	} else {
-		c = cache.NewMemoryCache()
+		mc := cache.NewMemoryCache()
+		c = mc
+		cacheCloser = mc
 		logger.L.Info("redis not configured, using memory cache")
 	}
 
@@ -106,18 +113,22 @@ func NewServer(rootPath string) (*Server, error) {
 	mux.HandleFunc("GET /", apiH.Home)
 
 	// 中间件包装顺序（后包装的在最外层，即先执行）：
-	// Recovery → RequestID → AccessLog → CORS → RateLimiter → Referer → mux
+	// Recovery → RequestID → AccessLog → RateLimiter → CORS → Referer → mux
+	// （RateLimiter 在 CORS 外层：OPTIONS 预检同样计入限流，防无限制预检洪泛）
 	var h http.Handler = mux
 	h = middleware.Referer()(h)
-	h = middleware.RateLimiter()(h)
 	h = middleware.CORS()(h)
+	rateLimitMW, limiterStop := middleware.RateLimiter()
+	h = rateLimitMW(h)
 	h = middleware.AccessLog()(h)
 	h = middleware.RequestID()(h)
 	h = middleware.Recovery()(h)
 
 	return &Server{
 		rootPath:    rootPath,
-		redisCloser: redisCloser,
+		svc:         svc,
+		cacheCloser: cacheCloser,
+		limiterStop: limiterStop,
 		httpSrv: &http.Server{
 			Addr:              config.C.ListenAddr(),
 			Handler:           h,
@@ -136,26 +147,19 @@ func (s *Server) Start() error {
 		return nil
 	}
 
-	errCh := make(chan error, 1)
+	// 先绑定端口再进入 Serve 循环：端口占用等错误同步返回，
+	// 消除此前"50ms 探测窗口"吞掉延迟 listen 错误的问题。
+	ln, err := net.Listen("tcp", s.httpSrv.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", s.httpSrv.Addr, err)
+	}
+
 	go func() {
 		logger.L.Info("server listening", "addr", s.httpSrv.Addr)
-		if err := s.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-			return
+		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			logger.L.Error("server error", "error", err)
 		}
-		errCh <- nil
 	}()
-
-	// 等待监听结果：成功进入 Serve 循环会立即返回 ErrServerClosed 吗？
-	// 不会——ListenAndServe 成功后会阻塞直到关闭，所以这里用短超时探测：
-	// 若端口被占用等错误会快速写入 errCh；正常启动则不返回。
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("listen %s: %w", s.httpSrv.Addr, err)
-		}
-	case <-time.After(50 * time.Millisecond):
-	}
 
 	s.running.Store(true)
 	return nil
@@ -167,12 +171,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	logger.L.Info("shutting down server...")
+	// 先停后台任务（限流清理协程、仓库 cron 调度器），再停 HTTP 与缓存
+	if s.limiterStop != nil {
+		s.limiterStop()
+	}
+	if s.svc != nil {
+		s.svc.Close()
+	}
 	if err := s.httpSrv.Shutdown(ctx); err != nil {
 		logger.L.Error("server forced to shutdown", "error", err)
 		return err
 	}
-	if s.redisCloser != nil {
-		_ = s.redisCloser.Close()
+	if s.cacheCloser != nil {
+		_ = s.cacheCloser.Close()
 	}
 	logger.L.Info("server exited")
 	return nil

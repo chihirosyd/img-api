@@ -9,13 +9,14 @@
 #
 # 每个 API 支持以下字段（键名大小写不敏感，推荐全小写，如 external_apis / response_type）：
 #   name          — API 标识（用于日志和健康检查）
-#   url           — 请求模板，支持占位符 {width} {height} {category}
+#   url           — 请求模板，支持占位符 {width} {height} {category}（必须为 http/https）
 #   response_type — redirect（跟随重定向）/ json（解析 JSON 响应）
 #   url_field     — JSON 响应中图片 URL 的字段路径（如 "urls.raw"）
 #   headers       — 自定义请求头（如 Authorization）
 #   categories       — 该 API 支持的分类列表，空或 ["all"] 表示匹配所有
 #   default_category — 默认分类（多值随机选一）；空=不传分类（{category} 置空、不加 category_param）
 #   category_param   — 分类对应的 query 参数名，如 "query"（可选）
+# 注意：请求与提取出的图片 URL 只接受 http/https（其他协议会被拒绝，防透出非法地址）
 #
 # 使用示例：
 #   ?source=external                     → 随机选一个 API，用其默认分类

@@ -38,6 +38,45 @@ func TestTxtCategoriesForDevice(t *testing.T) {
 	}
 }
 
+// TestTxtCategoriesUppercaseIgnored 回归 Z12：分类文件名统一按小写约定处理，
+// 大写 .TXT 文件不被列入分类清单（与读取/同步行为一致，避免"列得出取不到"）。
+func TestTxtCategoriesUppercaseIgnored(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "ANIME.TXT"), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "anime.txt"), []byte("https://example.com/b.jpg\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := txtCategoriesForDevice(root, "pc")
+	want := []string{"anime"} // 大写文件忽略；小写文件正常列出
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("txtCategoriesForDevice = %v, want %v", got, want)
+	}
+}
+
+// TestTxtCategoriesInvalidSchemeIgnored 回归 L1：非 http/https 的行不算有效 URL，
+// 分类探测与读取（ReadTxtLines）口径一致，避免"提示页说存在、请求却取不到"。
+func TestTxtCategoriesInvalidSchemeIgnored(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "bad.txt"), []byte("ftp://example.com/a.jpg\njavascript:alert(1)\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := txtCategoriesForDevice(root, "pc"); len(got) != 0 {
+		t.Errorf("txtCategoriesForDevice = %v, want empty (invalid schemes ignored)", got)
+	}
+}
+
 // TestLocalCategoriesForDevice 验证 local 分类清单只包含直接含图片文件的目录。
 func TestLocalCategoriesForDevice(t *testing.T) {
 	root := t.TempDir()

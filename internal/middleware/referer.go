@@ -29,9 +29,18 @@ func Referer() Middleware {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 首页与健康检查不参与防盗链：防盗链只保护图片接口，
+			// 外链访问首页/探针不应被 403 拦截
+			if r.URL.Path == "/" || r.URL.Path == "/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			referer := r.Header.Get("Referer")
 
-			// 空 Referer 放行（如直接访问、curl 请求）
+			// 空 Referer 放行（如直接访问、curl 请求）。
+			// 注意：盗链站可通过 referrerpolicy=no-referrer 让浏览器不发送
+			// Referer 从而绕过，防盗链仅拦截普通盗链场景（见 docs/CONFIG.md）。
 			if referer == "" || isAllowed(referer, whitelist) {
 				next.ServeHTTP(w, r)
 				return

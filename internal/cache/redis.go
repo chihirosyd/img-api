@@ -37,6 +37,7 @@ func NewRedisCache(addr, password string, db int) (*RedisCache, error) {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close() // 连接失败：释放客户端（避免对象泄漏）
 		return nil, fmt.Errorf("redis connect %s: %w", addr, err)
 	}
 

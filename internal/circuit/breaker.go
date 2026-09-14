@@ -12,8 +12,11 @@
 package circuit
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -44,6 +47,7 @@ func (s State) String() string {
 // Breaker 实现经典的三态熔断器，保护外部 API 调用。
 //
 // 所有字段通过 sync.RWMutex 保护，保障并发安全。
+// now 为时钟函数（默认 time.Now，测试可注入假时钟验证超时转移）。
 type Breaker struct {
 	mu sync.RWMutex // 保护以下所有字段
 
@@ -56,22 +60,38 @@ type Breaker struct {
 	lastFailAt  time.Time // 最近一次失败的时间（用于判断 OPEN→HALF_OPEN 超时）
 	halfTries   int       // HALF_OPEN 状态下已放行的探测次数
 	lastStateAt time.Time // 最后一次状态变更的时间（调试用）
+
+	now   func() time.Time // 时钟函数（测试注入用）
+	trips atomic.Int64     // 进入 OPEN 的次数（状态指标，暴露给 /health）
 }
 
 // NewBreaker 创建熔断器实例。
 //
 // 参数说明：
 //   failureThreshold — CLOSED 状态连续失败多少次后转为 OPEN（建议 3~10）
-//   timeoutSeconds   — OPEN 状态持续多少秒后尝试 HALF_OPEN（建议 30~120）
+//   timeoutSeconds   — OPEN 状态持续多少秒后尝试 HALF_OPEN（建议 30~120；<=0 表示立即半开，测试用）
 //   halfOpenMax      — HALF_OPEN 最多放行多少请求，任一成功即恢复 CLOSED（建议 1~5）
+//
+// 入参防御性钳位：failureThreshold/halfOpenMax 至少为 1——非法值（如 0）
+// 会让熔断器恒开（halfTries>=0 恒真）或一次失败即熔断，外部图源永久不可用。
 func NewBreaker(failureThreshold, timeoutSeconds, halfOpenMax int) *Breaker {
+	if failureThreshold < 1 {
+		failureThreshold = 1
+	}
+	if halfOpenMax < 1 {
+		halfOpenMax = 1
+	}
 	return &Breaker{
 		failureThreshold: failureThreshold,
 		timeout:          time.Duration(timeoutSeconds) * time.Second,
 		halfOpenMax:      halfOpenMax,
 		state:            StateClosed,
+		now:              time.Now,
 	}
 }
+
+// Trips 返回熔断器进入 OPEN 的次数（状态指标）。
+func (b *Breaker) Trips() int64 { return b.trips.Load() }
 
 // Call 执行受熔断器保护的操作。
 // 如果熔断器打开，返回 ErrCircuitOpen 而不执行 fn。
@@ -85,8 +105,8 @@ func (b *Breaker) Call(fn func() error) error {
 	case StateOpen:
 		// timeout<=0 表示断路后立即进入半开探测（测试/特殊场景）；
 		// 否则等待超时。不依赖 time.Since>0 判断：高分辨率时钟下
-		// 连续两次 time.Now() 可能返回相同值。
-		if b.timeout <= 0 || time.Since(b.lastFailAt) > b.timeout {
+		// 连续两次 now() 可能返回相同值。
+		if b.timeout <= 0 || b.now().Sub(b.lastFailAt) > b.timeout {
 			b.state = StateHalfOpen
 			b.halfTries = 0
 		} else {
@@ -117,7 +137,12 @@ func (b *Breaker) Call(fn func() error) error {
 		err = fn()
 	}()
 
-	// 3. 记录结果
+	// 3. 记录结果。客户端取消/超时（context.Canceled/DeadlineExceeded）
+	//    不算上游故障：不改变熔断状态（半开探测槽位仍消耗一次，可接受）
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -140,24 +165,26 @@ func (b *Breaker) onSuccess() {
 	case StateClosed:
 		b.failures = 0
 	}
-	b.lastStateAt = time.Now()
+	b.lastStateAt = b.now()
 }
 
 // onFailure 请求失败时的状态处理（调用方已持锁）
 func (b *Breaker) onFailure() {
 	b.failures++
-	b.lastFailAt = time.Now()
+	b.lastFailAt = b.now()
 
 	switch b.state {
 	case StateClosed:
 		if b.failures >= b.failureThreshold {
 			b.state = StateOpen
-			b.lastStateAt = time.Now()
+			b.trips.Add(1)
+			b.lastStateAt = b.now()
 		}
 	case StateHalfOpen:
 		b.state = StateOpen
+		b.trips.Add(1)
 		b.halfTries = 0
-		b.lastStateAt = time.Now()
+		b.lastStateAt = b.now()
 	}
 }
 

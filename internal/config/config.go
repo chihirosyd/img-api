@@ -181,17 +181,28 @@ func Load(rootPath string) error {
 	if C.CircuitHalfOpenMax <= 0 {
 		C.CircuitHalfOpenMax = 1
 	}
+	// 端口范围校验：非法值（0 会绑定随机端口、>65535 启动失败）回退默认并明确告警，
+	// 避免"静默改端口"（此前 APP_PORT=abc 静默用 8080、=0 静默绑随机端口均无提示）
+	if C.Port <= 0 || C.Port > 65535 {
+		fmt.Fprintf(os.Stderr, "⚠️  APP_PORT 非法（%d），已回退默认 8080（合法范围 1~65535）\n", C.Port)
+		C.Port = 8080
+	}
 
 	// ── 配置健全性告警（日志系统尚未初始化，输出到 stderr）──
-	for name, val := range map[string]string{
-		"redis_password": C.RedisPassword,
-		"app_name":       C.Name, "app_host": C.Host, "default_source": C.DefaultSource,
-		"redis_addr": C.RedisAddr,
-		"referer_whitelist": strings.Join(C.RefererWhitelist, ","),
-		"trusted_proxies":   strings.Join(C.TrustedProxies, ","),
+	// 覆盖全部字符串配置项（与 CHANGELOG 的承诺一致）
+	for _, c := range []struct{ name, value string }{
+		{"app_name", C.Name}, {"app_host", C.Host}, {"app_version", C.Version},
+		{"default_source", C.DefaultSource},
+		{"txt_default_category", C.TxtDefaultCategory},
+		{"local_default_category", C.LocalDefaultCategory},
+		{"local_index_refresh", C.LocalIndexRefresh},
+		{"redis_addr", C.RedisAddr}, {"redis_password", C.RedisPassword},
+		{"referer_whitelist", strings.Join(C.RefererWhitelist, ",")},
+		{"trusted_proxies", strings.Join(C.TrustedProxies, ",")},
+		{"log_level", C.LogLevel}, {"log_dir", C.LogDir},
 	} {
-		if strings.Contains(val, "$") {
-			fmt.Fprintf(os.Stderr, "⚠️  配置 %s 包含 $：.env 解析器会将其作为变量展开，请用单引号包裹该值（详见 docs/CONFIG.md）\n", name)
+		if strings.Contains(c.value, "$") {
+			fmt.Fprintf(os.Stderr, "⚠️  配置 %s 包含 $：.env 解析器会将其作为变量展开，请用单引号包裹该值（详见 docs/CONFIG.md）\n", c.name)
 		}
 	}
 
@@ -240,7 +251,7 @@ var defaults = map[string]string{
 	"APP_DEBUG": "false",
 	"APP_NAME":  "img-api",
 	"APP_HOST":  "0.0.0.0",
-	"APP_VERSION": "1.4.9",
+	"APP_VERSION": "1.5.0",
 	"APP_PORT":   "8080",
 
 	"CORS_ENABLED":       "true",

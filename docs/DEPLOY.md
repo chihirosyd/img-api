@@ -65,6 +65,13 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+# ⚠️ 关键步骤：授予运行用户目录权限。
+# 服务启动时会创建 storage/logs（日志）与 storage/index/local.json（本地图片索引），
+# /opt/img-api 默认为 root 所有，www-data 无写权限会导致服务启动失败（exit 1）。
+# 替代方案：只授权 storage/ 目录（sudo chown -R www-data:www-data /opt/img-api/storage），
+# 或把上面 User= 改成你自己的用户名运行。
+sudo chown -R www-data:www-data /opt/img-api
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now img-api
 ```
@@ -88,6 +95,11 @@ systemctl restart img-api         # 修改 .env 后重启
 #   - 开机自启（当前用户级，无需管理员）
 #   - 后台运行（关闭窗口时最小化到托盘，服务继续运行）
 ```
+
+> ⚠️ 若直接删除程序目录而未先在控制面板**关闭「开机自启」开关**，注册表会残留
+> 指向不存在 exe 的开机自启项。可手动清理：删除注册表
+> `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `img-api-gui` 值
+> （或在删除程序前先关闭自启开关）。
 
 **方式二：命令行（服务器/脚本场景）**
 
@@ -221,9 +233,13 @@ docker build -t img-api .
 docker run -d -p 8080:8080 \
   -v $(pwd)/.env:/app/.env \
   -v $(pwd)/config:/app/config \
-  -v $(pwd)/resources/txt:/app/resources/txt:ro \
+  -v $(pwd)/resources/txt:/app/resources/txt \
   --name img-api img-api
 ```
+
+> ⚠️ `resources/txt` 挂载**不能加 `:ro`**：容器首次启动需在其中创建 `pc/`、`pe/`
+> 骨架与示例 `default.txt`（只读挂载会导致 entrypoint 失败、容器反复重启）。
+> 如需加固，可先在宿主机建好 `resources/txt/pc`、`resources/txt/pe` 骨架后再改回只读。
 
 ---
 
@@ -247,7 +263,9 @@ server {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # 覆盖客户端伪造的 XFF（不要用 $proxy_add_x_forwarded_for 透传：
+        # 应用信任 XFF 第一段，透传会让伪造值生效，限流/日志 IP 可被伪造）
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 }
 ```
@@ -265,8 +283,8 @@ TRUSTED_PROXIES=172.17.0.0/16（示例，请按照实际填写）   # 可选但�
 > 💡 若想保留 Go 内置限流（`RATE_LIMIT_ENABLED=true`），则必须配置
 > `TRUSTED_PROXIES=172.17.0.0/16`（Nginx 所在网段）（示例，请按照实际填写），限流才会按
 > `X-Forwarded-For` 中的真实客户端 IP 统计；未配置时一律按 Nginx 的 IP 计数。
-> 注意：`TRUSTED_PROXIES` 需配合 `proxy_set_header X-Forwarded-For` 才生效，
-> 且网段尽量填窄（能覆盖网关即可）。
+> 注意：`TRUSTED_PROXIES` 需配合上方 `proxy_set_header X-Forwarded-For` 才生效，
+> 且必须**覆盖**（而非透传）客户端 XFF；网段尽量填窄（能覆盖网关即可）。
 
 ---
 
@@ -289,23 +307,41 @@ curl http://localhost:8080/health
 > 重建容器后配置与图库原样保留。
 >
 > 📌 固定版本升级：把 compose 里 `image: ghcr.io/chihirosyd/img-api:latest`
-> 改为 `:v1.2.0`（替换版本号即可）；`latest` 则始终跟随最新发布。
+> 改为 `:1.2.0`（替换版本号即可；注意镜像 tag 不带 `v` 前缀）；`latest` 则始终跟随最新发布。
 
 ### 二进制部署（Linux / macOS / Windows）
 
+> ⚠️ 升级**只覆盖二进制文件**：`.env`、`config/`、`resources/`、`storage/` 一律保留。
+> 先把新 zip 解压到临时目录，再只把二进制复制到原部署目录覆盖，
+> 不要在原目录直接 `unzip -o`（会覆盖你的配置与图库文件）。
+
 ```bash
-# 下载新版本 zip 覆盖旧文件（-o 覆盖；.env / config/ / resources/ / storage/ 保留）
+# 1. 下载新版本 zip
 wget https://github.com/chihirosyd/img-api/releases/latest/download/img-api-linux-amd64.zip
-unzip -o img-api-linux-amd64.zip
-./img-api     # 重启服务
+
+# 2. 解压到临时目录（zip 内文件位于 img-api/ 子目录下）
+unzip -q -o img-api-linux-amd64.zip -d /tmp/img-api-new
+
+# 3. 只复制二进制覆盖（把「/你的/实际部署目录」替换成你的部署路径，例如 /opt/img-api）
+cd /你的/实际部署目录
+cp /tmp/img-api-new/img-api/img-api \
+   /tmp/img-api-new/img-api/build-index \
+   /tmp/img-api-new/img-api/sync-redis \
+   /tmp/img-api-new/img-api/health-check .
+chmod +x img-api build-index sync-redis health-check
+
+# 4. 重启服务
+./img-api
 ```
 
-Windows：下载新 zip 覆盖解压到原目录（保留 `.env` 与图库），重新双击 `img-api.exe`。
+Windows：把新 zip 解压到临时目录，将 `img-api.exe`、`img-api-gui.exe`、
+`build-index.exe`、`sync-redis.exe`、`health-check.exe` 复制到原部署目录覆盖
+（`.env` 与图库不动），重新双击 `img-api.exe`。
 
 ### 回滚
 
-- Docker：把 compose 里镜像版本号改回上一版（如 `:v1.1.0`）→ `docker compose up -d`；
-- 二进制：重新下载旧版本 zip 覆盖即可。
+- Docker：把 compose 里镜像版本号改回上一版（如 `:1.1.0`，不带 `v`）→ `docker compose up -d`；
+- 二进制：重新下载旧版本 zip，解压到临时目录后复制二进制覆盖即可。
 
 ### 跨版本注意
 
@@ -330,7 +366,7 @@ flowchart TD
     D -->|兜底：依赖有更新则自动提交 go.mod / go.sum| E
     E --> F[git tag vX.Y.Z<br/>git push origin vX.Y.Z]
     F --> G[release.yml：check 全绿后编译 5 平台并发布 Release]
-    F --> H[docker.yml：构建多架构镜像推送 GHCR]
+    F --> H[release.yml docker job：check 全绿后构建多架构镜像推送 GHCR]
     G -.依赖按 tag 锁定.-> F
     H -.依赖按 tag 锁定.-> F
 ```

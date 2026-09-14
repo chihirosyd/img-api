@@ -76,7 +76,7 @@ GET /random
 或
 GET /random?source=txt
 
-# 本地图片（local 不支持默认的 redirect 模式，需带 mode=image）
+# 本地图片（redirect 自动降级为 image，也可显式传 mode=image）
 GET /random?source=local&mode=image
 
 # 外部 API 池
@@ -90,8 +90,8 @@ GET /random?source=external
 | `type` | string | — | `auto` | 设备类型：`auto`（自动检测）/ `pc` / `pe` |
 | `source` | string | — | `txt` | 图片来源：`txt` / `local` / `external`（外部 API 池）。默认值可通过 `DEFAULT_SOURCE` 配置修改 |
 | `mode` | string | — | `redirect` | 返回模式：`redirect` / `json` / `image` |
-| `category` | string | — | `default` | 图片分类，逗号分隔多选（如 `anime,scenery`）。默认分类内置为 `default`，txt/local 渠道可通过 `TXT_DEFAULT_CATEGORY` / `LOCAL_DEFAULT_CATEGORY` 配置修改 |
-| `api` | string | — | 随机 | `source=external` 时指定使用哪个外部 API（不传则随机选一个） |
+| `category` | string | — | `default` | 图片分类，逗号分隔多选（如 `anime,scenery`），最长 128 字节。默认分类内置为 `default`（大小写不敏感），txt/local 渠道可通过 `TXT_DEFAULT_CATEGORY` / `LOCAL_DEFAULT_CATEGORY` 配置修改 |
+| `api` | string | — | 随机 | `source=external` 时指定使用哪个外部 API（不传则随机选一个），最长 128 字节 |
 
 ### 参数详解
 
@@ -103,14 +103,14 @@ GET /random?source=external
 | `pc` | 强制返回 PC 端（横屏）图片 |
 | `pe` | 强制返回手机端（竖屏）图片 |
 
-> 📌 平板说明：iPad（iOS 13+）的 User-Agent 是桌面模式、不含移动关键词，
-> 会被识别为 `pc`；需要竖屏图时显式传 `type=pe`。
+> 📌 平板说明：iPad 的 User-Agent 含 "iPad" 关键词，会被识别为 `pe`（竖屏）；
+> 需要横屏图时显式传 `type=pc`。
 
 #### source — 图片来源
 
 | 值 | 说明 | 配置方式 |
 |------|------|---------|
-| `txt` | TXT 图库（推荐） | 新建 `resources/txt/{pc\|pe}/{分类名}.txt` 即时生效；向已有分类增删 URL 即时生效 |
+| `txt` | TXT 图库（推荐） | 新建 `resources/txt/{pc\|pe}/{分类名}.txt`（文件名中的**英文字母请使用小写**，如 `anime.txt`；中文分类名如 `风景.txt` 直接使用即可）即时生效；向已有分类增删 URL 即时生效 |
 | `local` | 本地图片文件 | 新建 `resources/local/{pc\|pe}/{分类名}/` 文件夹并放入图片，即时生效；已有分类中增删图片需重建索引并重启加载（详见 [CONFIG.md](CONFIG.md)） |
 | `external` | 外部 API 池 | 编辑 `config/image.yaml` 配置多个外部 API，再用 `api` 参数指定用哪个 |
 
@@ -124,11 +124,12 @@ GET /random?source=external
 | `json` | 返回 JSON 对象，包含 URL 和元信息 | 前端 AJAX 调用 |
 | `image` | 服务端代理下载图片后直接输出二进制 | 需要隐藏真实图片来源 |
 
-> ⚠️ `source=local` 不支持 `mode=redirect`（返回 400）：本地图源返回的是文件系统路径，
-> 无法通过 302 让浏览器访问。请使用 `mode=image`（服务端直接输出）或 `mode=json`。
+> ⚠️ `source=local` 不支持 302 跳转（图源返回的是文件系统路径）：请求 `mode=redirect`
+>（含默认值）时**自动降级为 `mode=image`**——服务端直接输出图片，无需显式传参；
+> 需要元数据时使用 `mode=json`（其中 `url` 是服务器本地路径，仅供调试）。
 
-> 📌 `source=local&mode=json` 返回的 `url` 是服务器本地文件路径（如 `/app/resources/local/...`），
-> 仅供调试参考，不是可公开访问的 URL。
+> 📌 `source=local&mode=json` 返回的 `url` 是**相对图库根目录（resources/local）的路径**
+> （如 `pc/default/photo.jpg`），不暴露服务器目录结构，仅供调试参考，不是可公开访问的 URL。
 
 #### api — 指定使用哪个外部 API
 
@@ -152,7 +153,7 @@ GET /random?source=external
 
 - 单分类：`?category=anime`
 - 多分类随机：`?category=anime,scenery,beauty`
-- 留空或传 `default`：使用默认分类（内置 `default`；txt/local 可通过
+- 留空或传 `default`（大小写不敏感）：使用默认分类（内置 `default`；txt/local 可通过
   `TXT_DEFAULT_CATEGORY` / `LOCAL_DEFAULT_CATEGORY` 修改，external 使用各 API 的 `default_category`）
 - 支持中文：`?category=风景`（浏览器自动 URL 编码）
 
@@ -174,7 +175,7 @@ GET /random?source=external
 
 | 响应头 | 说明 |
 |--------|------|
-| `X-Request-ID` | 本次请求的唯一追踪 ID（客户端传入的会被复用），日志中同名字段与之对应 |
+| `X-Request-ID` | 本次请求的唯一追踪 ID（客户端传入的合法值会被复用，非法值自动重新生成），日志中同名字段与之对应 |
 | `X-Content-Type-Options` | `nosniff` |
 | `X-Frame-Options` | `DENY` |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` |
@@ -269,7 +270,7 @@ Cache-Control: public, max-age=300
 > 💡 **友好提示页**：请求的图源未配置任何内容时，返回 HTTP 503 的"开始使用"引导页（HTML），
 > 介绍三种添加图片的方式。图源有内容但请求的分类不存在时，返回 HTTP 404 的"分类不存在"
 > 提示页（可用分类列表仅在 Debug 模式下展示，生产环境不暴露）。`mode=json` 时返回 JSON；
-> 博客 `<img>` 标签嵌入场景（`Accept` 含 `image/` 或 `mode=image`）返回内嵌文字的 SVG 占位图，
+> 博客 `<img>` 标签嵌入场景（`Accept` 以 `image/` 开头或 `mode=image`）返回内嵌文字的 SVG 占位图，
 > 提示不会因裂图而消失。
 
 ---
@@ -285,13 +286,14 @@ GET /health
 ```json
 {
   "status": "ok",
-  "version": "1.3.0",
-  "uptime": "2h 5m 30s",
+  "version": "x.y.z",
+  "uptime": "2h 5m",
   "checks": {
     "txt": "healthy",
     "local": "healthy",
     "external_pool": "healthy (1 APIs)",
     "circuit_breaker": "CLOSED",
+    "circuit_trips": "0",
     "cache": "redis"
   },
   "stats": {
@@ -315,7 +317,8 @@ GET /health
 | `ok` | 图源仓库健康。`local` / `txt` 仓库在启动时即初始化，`/health` 直接检查；`external` 渠道经 `external_pool` 信息性展示 |
 | `degraded` | 部分图源仓库不可用（服务仍可处理其他来源） |
 
-> `external_pool` / `circuit_breaker` / `cache` 为信息性状态，不参与健康判定。
+> `external_pool` / `circuit_breaker` / `circuit_trips` / `cache` 为信息性状态，不参与健康判定。
+> `circuit_trips`（checks 内，字符串）为熔断器累计进入 OPEN 的次数，与 `stats.circuit_trips`（请求被熔断拦截的次数）含义不同。
 > `version` 为代码内置版本号（随发布自动更新，与 CHANGELOG 一致）；
 > 可用环境变量 `APP_VERSION` 临时覆盖。
 > 统计字段两组：`total_*` 自服务启动累计（重启归零）；`today_*` 当日累计，按本地时间每日 0 点自动归零。
@@ -340,10 +343,10 @@ GET /health
 |--------|--------|----------|----------|
 | `302` | ✅ 成功 | 默认模式 `redirect` 正在跳转到真实图片 | 无需处理，浏览器和 `<img>` 标签会自动跟随 |
 | `200` | ✅ 成功 | `mode=json` 或 `mode=image` | 无需处理 |
-| `400` | 参数写错 | 参数值不在允许范围，或 `source=local` 没配 `mode=image` | 对照 [请求参数](#请求参数) 表检查拼写 |
+| `400` | 参数写错 | 参数值不在允许范围（非法字符、超长等） | 对照 [请求参数](#请求参数) 表检查拼写 |
 | `403` | 被拒绝 | Referer 不在防盗链白名单 | 联系站长确认白名单 |
 | `404` | 分类或 API 不存在 | 分类名与 txt 文件名不一致、多分类全都不存在、external 池无此 API | 检查拼写；Debug 模式下响应会附可用列表 |
 | `405` | 方法不允许 | 用了非 GET 方法（如 POST） | 本 API 仅支持 GET / OPTIONS |
-| `429` | 请求太频繁 | 触发限流 | 放慢频率，或联系站长调整限流配置 |
+| `429` | 请求太频繁 | 触发限流（响应附 `Retry-After: 60`，客户端可据此自动退避） | 放慢频率，或联系站长调整限流配置 |
 | `500` | 服务端处理失败 | 图源临时故障等 | 查看服务日志排查 |
 | `503` | 图源还没有内容 | 请求的 source 还没配置任何图片 | 页面本身是"开始使用"引导，按提示添加图片 |

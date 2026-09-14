@@ -3,8 +3,10 @@ package repository
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +27,9 @@ import (
 //  1. 优先 Redis Set → SRandMember O(1) 随机
 //  2. Redis 未命中 → 从 TXT 文件读取（带 mtime 校验的内存缓存，
 //     避免每个请求全量重读文件；管理员修改文件后即时生效）
+//
+// Redis 故障冷却：SRandMember 失败后进入 redisCooldown 冷却期，
+// 期间直走文件通道，避免 Redis 宕机时每个请求都等待超时。
 type TxtRepository struct {
 	rootPath string      // TXT 文件根目录（如 resources/txt）
 	cache    cache.Cache // 可选缓存（nil 表示跳过 Redis）
@@ -32,7 +37,16 @@ type TxtRepository struct {
 	// 文件内容内存缓存：path → 内容快照（mtime+size 校验，变化时自动重读）
 	fileMu    sync.RWMutex
 	fileCache map[string]txtFileCache
+
+	// Redis 故障冷却状态（见 shouldTryRedis / noteRedisFailure）
+	redisMu       sync.Mutex
+	redisFailAt   time.Time // 最近一次 Redis 失败时间（冷却期内直走文件）
+	redisLogAt    time.Time // 最近一次告警日志时间（限频：每分钟最多一条）
 }
+
+// redisCooldown 是 Redis 失败后的冷却时长：期间不再尝试 Redis，
+// 直接读文件。冷却结束后下一次请求会重新探测（失败则再次冷却）。
+const redisCooldown = 30 * time.Second
 
 // txtFileCache 是单个 TXT 文件的缓存快照。
 type txtFileCache struct {
@@ -69,12 +83,17 @@ func (r *TxtRepository) Random(ctx context.Context, category string, deviceType 
 		deviceDir = "pe"
 	}
 
-	// ── 第 1 层：Redis Set 快速通道 ──
-	if r.cache != nil {
+	// ── 第 1 层：Redis Set 快速通道（故障冷却期内跳过）──
+	if r.cache != nil && r.shouldTryRedis() {
 		redisKey := fmt.Sprintf("img:%s:%s", deviceDir, category)
-		if url, err := r.cache.SRandMember(ctx, redisKey); err == nil && url != "" {
+		url, err := r.cache.SRandMember(ctx, redisKey)
+		if err == nil && url != "" {
 			logger.L.Debug("txt redis hit", "key", redisKey, "url", url)
 			return &model.Image{URL: url, Category: category}, nil
+		}
+		if err != nil && !errors.Is(err, cache.Nil) {
+			// Redis 真实故障（Nil=键不存在，属正常）：进入冷却并限频告警
+			r.noteRedisFailure(err)
 		}
 	}
 
@@ -83,14 +102,19 @@ func (r *TxtRepository) Random(ctx context.Context, category string, deviceType 
 
 	lines, err := r.readLines(txtPath)
 	if err != nil {
+		// 文件不存在 → 分类不存在（哨兵错误供 Handler 渲染 404 提示页）；
+		// 其他 IO 错误原样返回（Handler 按 500 处理，避免掩盖真实故障）
+		if os.IsNotExist(err) {
+			return nil, &model.ErrNoImage{Source: "txt", Category: category}
+		}
 		return nil, fmt.Errorf("txt read %s: %w", txtPath, err)
 	}
 	if len(lines) == 0 {
-		return nil, fmt.Errorf("txt file is empty: %s", txtPath)
+		return nil, &model.ErrNoImage{Source: "txt", Category: category}
 	}
 
 	// 随机选择一行
-	idx := rand.Intn(len(lines))
+	idx := rand.IntN(len(lines))
 	url := strings.TrimSpace(lines[idx])
 
 	logger.L.Debug("txt random pick",
@@ -112,7 +136,8 @@ func (r *TxtRepository) Health(ctx context.Context) error {
 	return err
 }
 
-// ReadTxtLines 读取 TXT 文件并过滤空行与 # 注释行，返回有效行列表。
+// ReadTxtLines 读取 TXT 文件并过滤空行、# 注释行与非法 URL 行，
+// 返回有效行列表。
 //
 // 供 TxtRepository（带 mtime 缓存）与 sync-redis 命令共用，
 // 使两处对 TXT 文件的解析规则保持一致。
@@ -125,10 +150,18 @@ func ReadTxtLines(path string) ([]string, error) {
 
 	var lines []string
 	scanner := bufio.NewScanner(f)
+	// 默认 64KB 行上限对 URL 行太小：调到 1MB（超过则报"行超长"错误，
+	// 而不是静默截断导致 URL 损坏）
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue // 跳过空行和注释
+		}
+		// 仅接受 http/https URL：非法协议（file:、javascript: 等）与含控制字符
+		// （如 CR/LF 头注入）的行直接跳过，保证 mode=redirect 的 Location 安全
+		if !IsValidImageURL(line) {
+			continue
 		}
 		lines = append(lines, line)
 	}
@@ -136,6 +169,14 @@ func ReadTxtLines(path string) ([]string, error) {
 		return nil, err
 	}
 	return lines, nil
+}
+
+// IsValidImageURL 校验 URL 可解析且 scheme 为 http/https。
+// 供 txt 图库、外部 API 池、分类探测（service/catalog.go）共用口径：
+// 只有合法 http(s) 地址才视为有效图片 URL。
+func IsValidImageURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https")
 }
 
 // readLines 读取文件内容（带 mtime+size 校验的内存缓存）。
@@ -147,7 +188,8 @@ func (r *TxtRepository) readLines(path string) ([]string, error) {
 		return nil, err
 	}
 
-	// 命中缓存（mtime 与 size 均未变）
+	// 命中缓存（mtime 与 size 均未变）。
+	// 注意：返回的切片与缓存共享底层数组，调用方只读、不得修改。
 	r.fileMu.RLock()
 	if c, ok := r.fileCache[path]; ok && c.mtime.Equal(info.ModTime()) && c.size == info.Size() {
 		lines := c.lines
@@ -171,4 +213,26 @@ func (r *TxtRepository) readLines(path string) ([]string, error) {
 	r.fileMu.Unlock()
 
 	return lines, nil
+}
+
+// shouldTryRedis 判断当前是否应尝试 Redis 快速通道。
+// 故障冷却期内返回 false（直走文件），冷却结束后恢复探测。
+func (r *TxtRepository) shouldTryRedis() bool {
+	r.redisMu.Lock()
+	defer r.redisMu.Unlock()
+	return time.Since(r.redisFailAt) >= redisCooldown
+}
+
+// noteRedisFailure 记录 Redis 失败时间（进入冷却），并按分钟限频输出告警日志，
+// 让运维能感知运行期 Redis 故障（而非静默降级）。
+func (r *TxtRepository) noteRedisFailure(err error) {
+	r.redisMu.Lock()
+	defer r.redisMu.Unlock()
+	now := time.Now()
+	r.redisFailAt = now
+	if now.Sub(r.redisLogAt) >= time.Minute {
+		r.redisLogAt = now
+		logger.L.Warn("redis unavailable, cooling down; serving from txt files",
+			"cooldown", redisCooldown, "error", err)
+	}
 }

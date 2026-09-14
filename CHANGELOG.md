@@ -4,6 +4,81 @@
 
 ## [未发布]
 
+## [1.5.0] - 2026-09-14
+
+本次为全面代码审查后的加固版本（审查覆盖发布链路、核心逻辑、一致性与测试共 84 项），重点变更如下。
+
+### 变更
+
+- `source=local` + `mode=redirect`（含默认值）自动降级为 `mode=image`：服务端直接输出图片，不再返回 400 破图；`DEFAULT_SOURCE=local` 时首页嵌图开箱即用
+- `source=local&mode=json` 的 `url` 字段改为**相对图库根目录**的路径（如 `pc/default/a.jpg`，原为服务器绝对路径）
+- TXT 分类文件名统一**小写约定**：大写 `.TXT` 文件不再被识别（提示页/取图/sync-redis 三处一致）；中文分类名不受影响
+- txt 图库与外部 API 仅接受 `http/https` 图片地址：其他协议（`ftp:`、`javascript:` 等）与含控制字符的行被跳过/拒绝
+- 429 限流响应新增 `Retry-After: 60`；`/health` 探针不占限流配额；OPTIONS 预检同样计入限流
+- `health-check` 新增 `-strict` 参数（degraded 状态退出码 1），compose healthcheck 已启用：服务半故障时容器显示 unhealthy 而非恒 healthy
+- `/health` 新增 `circuit_trips` 熔断次数
+
+### 修复
+
+**发布/部署链路（高危）**
+
+- GUI 开机自启根目录探测改用 `resources/` 目录标记（发布包不含 go.mod，此前自启从错误目录启动、服务启动失败）
+- 二进制升级指引重写为「临时目录解压、只覆盖二进制」：不再覆盖用户的 `config/image.yaml` 与图库 `default.txt`，并修复 zip 嵌套目录导致"升级后仍是旧版本"的问题
+- 文档镜像 tag 去 `v` 前缀（镜像实际 tag 为 `1.4.9`，此前文档写 `:v1.2.0` 会拉取失败）
+- Release 拆独立 publish job：修复 5 平台并行创建 Release 的 422 竞态（间歇性缺 zip）
+- 镜像构建并入 release.yml 并依赖检查全绿：测试红不再推送镜像/挪动 latest；仅最新 tag 可更新 latest（防旧 tag 回退）
+- systemd 示例补 `chown` 权限步骤；手动 docker run 示例去掉 `:ro`（修复容器循环重启）
+
+**缓存与存储**
+
+- 内存缓存过期删除竞态修复：不再误删刚写入的新值、计数不再漂移（淘汰上限失效问题），新增优雅关闭
+- 本地索引扫描失败不再用空索引覆盖磁盘上有效的 `local.json`
+- 索引原子写入（同目录随机临时文件 + 落盘 + 重命名）
+- Redis 运行期故障 30 秒冷却直走文件（不再每个请求等待超时）并输出限频告警
+
+**安全**
+
+- SSRF 拦截补全保留网段（TEST-NET、`240.0.0.0/4`、`198.18.0.0/15` 等）
+- `X-Forwarded-For`/`X-Real-IP` 首段合法性校验：伪造值回退对端 IP（防无限限流桶）
+- 防盗链豁免首页与 `/health`（外链访问首页不再 403）；文档写明 `referrerpolicy=no-referrer` 可绕过边界
+- query 参数长度上限 128 字节（防日志膨胀/响应放大）；X-Request-ID 控制字符清洗
+
+**接口正确性**
+
+- JSON 型外部 API 返回实际分类（不再固定 `external`，与 redirect 型一致）
+- 上游 Content-Type 大小写不敏感判定（`Image/Png` 不再误拒 502）
+- IO 故障不再误报「分类不存在」404；`mode=image` 代理失败计入失败统计
+- `default` 分类判定大小写不敏感；超长行处理两条路径结论一致
+- panic 恢复输出统一 JSON 契约；端口占用错误同步返回（先 Listen 再 Serve）
+- `APP_PORT` 非法值回退默认并输出告警（此前静默用 8080/绑随机端口）
+
+**GUI 与配置**
+
+- GUI 保存 `.env` 键匹配大小写不敏感（不再追加重复键）且保留原行尾；重启失败提示修正；启动前即显示配置端口
+- GUI 反复重启的后台协程泄漏修复（缓存/限流器/索引调度器随服务优雅关闭）
+- 配置的默认分类值增加路径校验（非法回退内置 default 并告警）
+
+### CI/CD 与 Docker
+
+- 新增 Windows（windows-latest）GUI 构建验证 job：`cmd/gui` 不再零覆盖"盲发"
+- 版本一致性门禁：tag 必须与 CHANGELOG、config.go 三方一致；`go mod tidy` 后校验 diff
+- Release 资产新增 SHA256SUMS 与 SPDX SBOM；setup-go 启用依赖缓存；staticcheck（v0.7.0）/ govulncheck（v1.5.0）固定版本
+- gosum 自动升级依赖提交前先跑测试；Dockerfile 依赖层缓存（源码变更不重下依赖）+ 时区 ARG（构建期可覆盖）
+- `setversion` 防呆：CHANGELOG 版本低于代码版本时报错、相等时幂等空操作
+
+### 优化
+
+- 熔断器：客户端取消/超时不计入失败；时钟可注入（超时转移可测试）；新增 Trips 计数
+- 分类清单快照/图源空置检查重建合并（缓存过期瞬间只扫描一次）；Health 检查不再持锁 IO
+- local 索引未命中且目录不存在时负缓存 30 秒（轻量 Stat 复核，新增分类仍即时可用）
+- netx DNS 解析缓存 30 秒 + 拨号器支持注入解析器
+- `math/rand` → `math/rand/v2`；`writeJSON` 抽共享包（handler/middleware 同一实现）
+- 测试大幅补强：熔断并发半开上限、外部 API httptest 端到端、拨号拦截集成断言、缓存淘汰、符号链接等 60+ 断言
+
+### 文档
+
+- API/README/CONFIG/DEPLOY 全面同步：local 自动降级与相对路径说明、分类名小写约定、防盗链边界与首页豁免、XFF 覆盖要求、升级指引重写、开机自启残留清理；`/health` 新增字段（`circuit_trips`）与 `-strict` 用法、429 的 `Retry-After`、参数长度上限、`.env.example` 与 `image.yaml` 注释同步更新
+
 ## [1.4.9] - 2026-09-06
 
 ### 变更

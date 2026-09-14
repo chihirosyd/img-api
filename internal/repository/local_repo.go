@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +40,18 @@ type LocalRepository struct {
 
 	mu     sync.RWMutex       // 保护 images
 	images map[string][]string // 内存索引：key "pc/default" → 绝对路径列表
+
+	cron *cron.Cron // 索引自动刷新调度器（nil = 未启用；Stop 时关闭）
+
+	// 负缓存：曾扫描判定"目录不存在"的分类（key "pc/cat" → 判定时间）。
+	// 30s 内不再重复递归扫描；命中时仅做一次轻量 os.Stat 复核，
+	// 目录一出现（新增分类）立即恢复扫描，保持"新增分类即时可用"的承诺。
+	negMu sync.Mutex
+	negAt map[string]time.Time
 }
+
+// negCacheTTL 是负缓存的有效时长。
+const negCacheTTL = 30 * time.Second
 
 // NewLocalRepository 创建本地文件仓库并立即加载或生成索引。
 //
@@ -51,6 +62,7 @@ func NewLocalRepository(rootPath, indexFile string) *LocalRepository {
 		rootPath:  rootPath,
 		indexFile: indexFile,
 		images:    make(map[string][]string),
+		negAt:     make(map[string]time.Time),
 	}
 
 	// 优先加载已有索引；不存在/损坏则扫描目录生成（仅启动这一次）
@@ -99,20 +111,37 @@ func (r *LocalRepository) Random(ctx context.Context, category string, deviceTyp
 	files := r.images[key]
 	r.mu.RUnlock()
 
-	// 第 2 层：索引未命中 → 直接扫描目录
+	// 第 2 层：索引未命中 → 直接扫描目录（带"目录不存在"负缓存）
 	if len(files) == 0 {
 		dir := filepath.Join(r.rootPath, deviceDir, category)
+
+		// 负缓存命中：曾判定目录不存在。仅做一次轻量 Stat 复核——
+		// 目录一出现（新增分类）立即清缓存走正常扫描，保持"新增分类即时可用"
+		if r.negativeRecently(key) {
+			if _, statErr := os.Stat(dir); statErr == nil {
+				r.clearNegative(key)
+			} else {
+				return nil, &model.ErrNoImage{Source: "local", Category: category}
+			}
+		}
+
 		var err error
 		files, err = r.scanImages(dir)
 		if err != nil {
+			// 目录不存在 → 记负缓存并返回分类不存在（哨兵错误供 Handler 渲染 404 提示页）；
+			// 其他 IO 错误原样返回（Handler 按 500 处理）
+			if os.IsNotExist(err) {
+				r.rememberNegative(key)
+				return nil, &model.ErrNoImage{Source: "local", Category: category}
+			}
 			return nil, fmt.Errorf("local scan %s: %w", dir, err)
 		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no images found in: %s", filepath.Join(r.rootPath, deviceDir, category))
+		return nil, &model.ErrNoImage{Source: "local", Category: category}
 	}
 
-	idx := rand.Intn(len(files))
+	idx := rand.IntN(len(files))
 	path := files[idx]
 
 	logger.L.Debug("local random pick",
@@ -126,6 +155,43 @@ func (r *LocalRepository) Random(ctx context.Context, category string, deviceTyp
 		URL:      path,
 		Category: category,
 	}, nil
+}
+
+// ── 负缓存（"目录不存在"判定，30 秒）──
+
+// negativeRecently 判断 key 是否处于"目录不存在"负缓存期内。
+func (r *LocalRepository) negativeRecently(key string) bool {
+	r.negMu.Lock()
+	defer r.negMu.Unlock()
+	at, ok := r.negAt[key]
+	if !ok {
+		return false
+	}
+	if time.Since(at) >= negCacheTTL {
+		delete(r.negAt, key)
+		return false
+	}
+	return true
+}
+
+// rememberNegative 记录"目录不存在"判定，并顺手清理过期条目（限制 map 增长）。
+func (r *LocalRepository) rememberNegative(key string) {
+	r.negMu.Lock()
+	defer r.negMu.Unlock()
+	now := time.Now()
+	r.negAt[key] = now
+	for k, at := range r.negAt {
+		if now.Sub(at) >= negCacheTTL {
+			delete(r.negAt, k)
+		}
+	}
+}
+
+// clearNegative 清除 key 的负缓存（目录已出现，如新增分类）。
+func (r *LocalRepository) clearNegative(key string) {
+	r.negMu.Lock()
+	defer r.negMu.Unlock()
+	delete(r.negAt, key)
 }
 
 // Health 检查本地图片根目录是否存在。
@@ -161,12 +227,24 @@ func (r *LocalRepository) loadIndex() error {
 // ScanLocalImages 扫描本地图片目录，返回分类索引（key "pc/default" → 绝对路径列表）。
 //
 // 与 build-index 命令共用同一扫描函数，结果保持一致。
-// 目录不存在或不可读时返回空索引（不报错），保持最小可用。
-func ScanLocalImages(rootPath string) map[string][]string {
+// 错误语义：
+//   - 根目录不存在 → 视为"暂无图片"（首次启动正常场景），返回空索引 + nil 错误
+//   - 其他扫描错误（权限、IO 故障等）→ 记录首个错误并返回，调用方应保留旧索引，
+//     避免用不完整/空索引覆盖磁盘上有效的 local.json
+func ScanLocalImages(rootPath string) (map[string][]string, error) {
 	images := make(map[string][]string)
+	var firstErr error
 
 	_ = filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			// 根目录不存在属正常场景（首次启动），不记为错误；
+			// 其余错误记录但继续扫描（部分结果不用于覆盖索引）
+			if firstErr == nil && !os.IsNotExist(err) {
+				firstErr = err
+			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(d.Name()))
@@ -177,6 +255,9 @@ func ScanLocalImages(rootPath string) map[string][]string {
 		// 相对路径 pc/default/xxx.jpg → key "pc/default"
 		rel, relErr := filepath.Rel(rootPath, path)
 		if relErr != nil {
+			if firstErr == nil {
+				firstErr = relErr
+			}
 			return nil
 		}
 		parts := strings.SplitN(filepath.ToSlash(rel), "/", 3)
@@ -187,13 +268,19 @@ func ScanLocalImages(rootPath string) map[string][]string {
 		return nil
 	})
 
-	return images
+	return images, firstErr
 }
 
 // refreshIndex 扫描整个 local 目录，更新内存索引并写回 local.json。
-// 目录不存在时生成空索引（不报错），使首次启动也能正常创建文件。
+// 扫描出错时保留旧索引（内存+磁盘），返回错误；目录不存在时生成空索引
+// （不报错），使首次启动也能正常创建文件。
 func (r *LocalRepository) refreshIndex() error {
-	images := ScanLocalImages(r.rootPath)
+	images, scanErr := ScanLocalImages(r.rootPath)
+	if scanErr != nil {
+		// 扫描失败（目录瞬时不可读等）：保留旧索引，不覆盖磁盘上有效的 local.json
+		logger.L.Warn("local index scan failed, keeping existing index", "error", scanErr)
+		return fmt.Errorf("scan local images: %w", scanErr)
+	}
 
 	// 更新内存索引
 	r.mu.Lock()
@@ -211,9 +298,11 @@ func (r *LocalRepository) refreshIndex() error {
 }
 
 // writeIndex 将索引序列化写入 local.json（与 build-index 命令输出格式一致，可互换使用）。
-// 原子写入：先写临时文件再重命名，避免写入中途崩溃导致索引损坏。
+// 原子写入：同目录随机临时文件 + Sync 落盘 + 重命名——避免固定 .tmp 并发冲突
+// 与掉电导致索引损坏。
 func (r *LocalRepository) writeIndex(images map[string][]string) error {
-	if err := os.MkdirAll(filepath.Dir(r.indexFile), 0755); err != nil {
+	dir := filepath.Dir(r.indexFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 
@@ -222,11 +311,24 @@ func (r *LocalRepository) writeIndex(images map[string][]string) error {
 		return err
 	}
 
-	tmp := r.indexFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	tmp, err := os.CreateTemp(dir, ".local.json.tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, r.indexFile)
+	defer os.Remove(tmp.Name()) // Rename 成功后此清理为 no-op
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), r.indexFile)
 }
 
 // startRefreshScheduler 启动 cron 调度器，按计划表刷新索引。
@@ -241,8 +343,17 @@ func (r *LocalRepository) startRefreshScheduler(schedule string) error {
 		return err
 	}
 	c.Start()
+	r.cron = c
 	logger.L.Info("local index auto refresh enabled", "schedule", schedule)
 	return nil
+}
+
+// Stop 停止索引自动刷新调度器（服务优雅关闭时调用，防止 goroutine 泄漏）。
+// 可重复调用；未启用调度器时为空操作。
+func (r *LocalRepository) Stop() {
+	if r.cron != nil {
+		r.cron.Stop()
+	}
 }
 
 // parseRefreshSchedule 将配置值归一化为 cron 表达式。
@@ -270,23 +381,26 @@ func parseRefreshSchedule(raw string) (string, bool) {
 	return raw, true
 }
 
-// scanImages 列出目录下的所有图片文件（仅当前层，不递归子目录）。
-// 返回绝对路径列表，不含子目录。
+// scanImages 递归列出目录下的所有图片文件（含子目录，与 ScanLocalImages 的
+// 索引规则一致：分类目录内的子文件夹图片也归入该分类）。
+// 返回绝对路径列表；目录不存在时返回 os.ErrNotExist 类错误。
 func (r *LocalRepository) scanImages(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(d.Name()))
+		if model.ImageExts[ext] {
+			files = append(files, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	var files []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(entry.Name()))
-		if model.ImageExts[ext] {
-			files = append(files, filepath.Join(dir, entry.Name()))
-		}
 	}
 	return files, nil
 }

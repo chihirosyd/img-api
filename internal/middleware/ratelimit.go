@@ -11,25 +11,20 @@ import (
 	"img-api/internal/logger"
 )
 
-// RateLimiter 基于滑动窗口日志的 IP 频率限制中间件。
-//
-// 纯内存实现，无需 Redis，适合单机部署。
-// 每个 IP 在滑动窗口内最多 maxReqs 次请求（默认 60/分钟）。
-// 超出限制返回 HTTP 429。
-//
-// 限制：
-//   - 进程重启后计数清零
-//   - 多实例部署时各自独立计数（需替换为 Redis 方案）
-func RateLimiter() Middleware {
+// RateLimiter 返回限流中间件与停止函数。
+// 停止函数用于服务优雅关闭：终止后台清理协程（GUI 反复重启服务时防止 goroutine 泄漏）。
+func RateLimiter() (Middleware, func()) {
 	if !config.C.RateLimitEnabled {
-		return func(next http.Handler) http.Handler { return next }
+		return func(next http.Handler) http.Handler { return next }, func() {}
 	}
 
 	limiter := &slidingWindowLimiter{
-		window:        1 * time.Minute,
-		maxReqs:       config.C.RateLimitMax,
-		ips:           make(map[string]*timestamps),
+		window:         1 * time.Minute,
+		maxReqs:        config.C.RateLimitMax,
+		ips:            make(map[string]*timestamps),
 		trustedProxies: parseTrustedProxies(config.C.TrustedProxies),
+		stopCh:         make(chan struct{}),
+		doneCh:         make(chan struct{}),
 	}
 
 	// 后台定期清理过期 IP 记录
@@ -37,10 +32,18 @@ func RateLimiter() Middleware {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 健康检查探针不占限流配额：探针被 429 会连累容器被误判 unhealthy
+			if r.URL.Path == "/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			ip := realClientIP(r, limiter.trustedProxies)
 
 			if !limiter.allow(ip) {
 				logger.L.Warn("rate limit exceeded", "ip", ip)
+				// Retry-After：告知客户端窗口长度，浏览器/爬虫可自动退避重试
+				w.Header().Set("Retry-After", "60")
 				writeJSON(w, http.StatusTooManyRequests, map[string]any{
 					"code":    429,
 					"message": "too many requests, please try again later",
@@ -50,7 +53,7 @@ func RateLimiter() Middleware {
 
 			next.ServeHTTP(w, r)
 		})
-	}
+	}, limiter.stop
 }
 
 // ── 滑动窗口内部实现 ──
@@ -69,6 +72,16 @@ type slidingWindowLimiter struct {
 	maxReqs        int
 	ips            map[string]*timestamps
 	trustedProxies []*net.IPNet // 可信反代网段（来自 TRUSTED_PROXIES 配置）
+
+	stopOnce sync.Once     // 保证 stop 只关闭一次 stopCh
+	stopCh   chan struct{} // 通知清理协程退出
+	doneCh   chan struct{} // 清理协程退出信号
+}
+
+// stop 停止后台清理协程（幂等；限流功能本身仍可用）。
+func (l *slidingWindowLimiter) stop() {
+	l.stopOnce.Do(func() { close(l.stopCh) })
+	<-l.doneCh
 }
 
 // allow 检查 IP 在滑动窗口内是否允许通过。
@@ -105,23 +118,31 @@ func (l *slidingWindowLimiter) allow(ip string) bool {
 // cleanup 定期清理无活跃请求的 IP 记录，防止内存泄漏。
 func (l *slidingWindowLimiter) cleanup(interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for range ticker.C {
-		l.mu.Lock()
-		cutoff := time.Now().Add(-l.window)
-		for ip, ts := range l.ips {
-			// 移除过期的
-			idx := 0
-			for idx < len(ts.times) && ts.times[idx].Before(cutoff) {
-				idx++
+	defer func() {
+		ticker.Stop()
+		close(l.doneCh)
+	}()
+	for {
+		select {
+		case <-ticker.C:
+			l.mu.Lock()
+			cutoff := time.Now().Add(-l.window)
+			for ip, ts := range l.ips {
+				// 移除过期的
+				idx := 0
+				for idx < len(ts.times) && ts.times[idx].Before(cutoff) {
+					idx++
+				}
+				ts.times = ts.times[idx:]
+				// 无活跃请求 → 删除 IP 记录
+				if len(ts.times) == 0 {
+					delete(l.ips, ip)
+				}
 			}
-			ts.times = ts.times[idx:]
-			// 无活跃请求 → 删除 IP 记录
-			if len(ts.times) == 0 {
-				delete(l.ips, ip)
-			}
+			l.mu.Unlock()
+		case <-l.stopCh:
+			return
 		}
-		l.mu.Unlock()
 	}
 }
 
@@ -149,16 +170,24 @@ func realClientIP(r *http.Request, trusted []*net.IPNet) string {
 		return remoteIP.String() // 直连客户端：不信任任何转发头
 	}
 
-	// 可信代理来源：X-Forwarded-For 第一段为客户真实 IP
+	// 可信代理来源：X-Forwarded-For 第一段为客户真实 IP。
+	// 首段必须是合法 IP：垃圾/伪造值回退对端 IP，防止攻击者轮换任意
+	// 字符串制造无限限流桶（限流器 map 膨胀）。
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		// X-Forwarded-For 格式: "client, proxy1, proxy2"
+		first := fwd
 		if idx := strings.IndexByte(fwd, ','); idx > 0 {
-			return strings.TrimSpace(fwd[:idx])
+			first = fwd[:idx]
 		}
-		return strings.TrimSpace(fwd)
+		if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+			return ip.String()
+		}
 	}
+	// X-Real-IP 同样校验合法性
 	if real := r.Header.Get("X-Real-IP"); real != "" {
-		return strings.TrimSpace(real)
+		if ip := net.ParseIP(strings.TrimSpace(real)); ip != nil {
+			return ip.String()
+		}
 	}
 	return remoteIP.String()
 }

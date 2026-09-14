@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,9 +30,9 @@ type ExternalPool struct {
 	client *http.Client        // 共享的 HTTP 客户端（10s 超时）
 }
 
-// APIs 返回池中所有端点（用于 /health 展示数量）。
+// APIs 返回池中所有端点的拷贝（防止调用方篡改池配置）。
 func (p *ExternalPool) APIs() []ExternalAPIConfig {
-	return p.apis
+	return append([]ExternalAPIConfig(nil), p.apis...)
 }
 
 // FindByName 按名称查找 API 配置（大小写不敏感）。
@@ -84,6 +84,10 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 	if len(p.apis) == 0 {
 		return nil, model.ErrExternalNotConfigured
 	}
+	// 防御：零值构造（绕过 LoadExternalPool）时客户端为 nil，补默认客户端避免 panic
+	if p.client == nil {
+		p.client = netx.NewClient(10 * time.Second)
+	}
 
 	// ── 第 1 步：确定目标 API ──
 	var api *ExternalAPIConfig
@@ -98,7 +102,7 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 		// 校验分类：如果用户指定了 category 且 API 有白名单，检查是否匹配。
 		// 不匹配属请求/配置问题而非上游故障，返回哨兵错误供 Handler 渲染 404 提示页
 		// （正常情况下 Service 层已在进入熔断器前预检，这里是防御性兜底）。
-		if category != "" && category != "default" && len(api.Categories) > 0 && !p.apiMatchesCategory(*api, category) {
+		if category != "" && !strings.EqualFold(category, "default") && len(api.Categories) > 0 && !p.apiMatchesCategory(*api, category) {
 			return nil, &model.ErrCategoryNotSupported{Source: "external", Category: category}
 		}
 	} else {
@@ -108,12 +112,12 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 		if len(candidates) == 0 {
 			return nil, &model.ErrCategoryNotSupported{Source: "external", Category: category}
 		}
-		api = &candidates[rand.Intn(len(candidates))]
+		api = &candidates[rand.IntN(len(candidates))]
 	}
 
 	// ── 第 2 步：确定实际使用的分类 ──
 	effectiveCategory := category
-	if effectiveCategory == "" || effectiveCategory == "default" {
+	if effectiveCategory == "" || strings.EqualFold(effectiveCategory, "default") {
 		effectiveCategory = p.pickDefaultCategory(api)
 	}
 
@@ -152,7 +156,7 @@ func (p *ExternalPool) Random(ctx context.Context, apiName, category string, dev
 	// 根据响应类型处理
 	switch api.ResponseType {
 	case "json":
-		return p.fetchJSON(ctx, *api, reqURL, widthI, heightI, deviceType)
+		return p.fetchJSON(ctx, *api, reqURL, effectiveCategory, widthI, heightI, deviceType)
 	default:
 		return p.fetchRedirect(ctx, *api, reqURL, effectiveCategory, widthI, heightI, deviceType)
 	}
@@ -176,17 +180,38 @@ func userAgentFor(deviceType model.DeviceType) string {
 
 // buildRequestHeaders 拷贝自定义请求头，并在未显式配置 User-Agent 时按设备类型
 // 注入代表性 UA，使按 UA 自适应的上游返回对应版本图片（已配置则优先使用配置值）。
+// 大小写重复的 User-Agent 键会告警，并优先采用规范键 "User-Agent" 的值。
 func buildRequestHeaders(custom map[string]string, deviceType model.DeviceType) map[string]string {
 	headers := make(map[string]string, len(custom)+1)
-	hasUA := false
+	canonicalUA := ""
+	firstUA := ""
+	uaCount := 0
 	for k, v := range custom {
 		if strings.EqualFold(k, "User-Agent") {
-			hasUA = true
+			uaCount++
+			if k == "User-Agent" {
+				canonicalUA = v
+			}
+			if firstUA == "" {
+				firstUA = v
+			}
+			continue
 		}
 		headers[k] = v
 	}
-	if !hasUA {
+	switch {
+	case uaCount == 0:
 		headers["User-Agent"] = userAgentFor(deviceType)
+	case uaCount > 1:
+		logger.L.Warn("duplicate User-Agent keys in image.yaml headers (case-insensitive), using canonical key value",
+			"count", uaCount)
+		fallthrough
+	default:
+		if canonicalUA != "" {
+			headers["User-Agent"] = canonicalUA
+		} else {
+			headers["User-Agent"] = firstUA
+		}
 	}
 	return headers
 }
@@ -200,17 +225,17 @@ func (p *ExternalPool) pickDefaultCategory(api *ExternalAPIConfig) string {
 	if len(api.DefaultCategory) == 1 {
 		return api.DefaultCategory[0]
 	}
-	return api.DefaultCategory[rand.Intn(len(api.DefaultCategory))]
+	return api.DefaultCategory[rand.IntN(len(api.DefaultCategory))]
 }
 
 // filterByCategory 从 API 池中筛选支持指定分类的端点。
 //
 // 筛选规则：
-//   - category 为空或 "default" → 返回全部 API（不做筛选）
+//   - category 为空或 "default"（大小写不敏感）→ 返回全部 API（不做筛选）
 //   - API 的 categories 为空或包含 "all" → 匹配所有分类
 //   - 否则：API 的 categories 列表中必须包含请求的 category
 func (p *ExternalPool) filterByCategory(category string) []ExternalAPIConfig {
-	if category == "" || category == "default" {
+	if category == "" || strings.EqualFold(category, "default") {
 		return p.apis
 	}
 
@@ -239,10 +264,10 @@ func (p *ExternalPool) apiMatchesCategory(api ExternalAPIConfig, category string
 }
 
 // SupportsCategory 判断池中是否至少存在一个 API 支持指定分类。
-// category 为空或 "default" 时不筛选（固定返回 true，与 filterByCategory 规则一致）。
+// category 为空或 "default"（大小写不敏感）时不筛选（固定返回 true，与 filterByCategory 规则一致）。
 // 供 Service 层在进入熔断器前预检，避免分类不匹配被误记为上游失败。
 func (p *ExternalPool) SupportsCategory(category string) bool {
-	if category == "" || category == "default" {
+	if category == "" || strings.EqualFold(category, "default") {
 		return true
 	}
 	for _, api := range p.apis {
@@ -254,10 +279,10 @@ func (p *ExternalPool) SupportsCategory(category string) bool {
 }
 
 // APISupportsCategory 判断指定名称的 API 是否支持该分类。
-// category 为空或 "default" 时不筛选（固定返回 true）。
+// category 为空或 "default"（大小写不敏感）时不筛选（固定返回 true）。
 // API 不存在时返回 false（调用方应先经 FindByName 确认存在）。
 func (p *ExternalPool) APISupportsCategory(name, category string) bool {
-	if category == "" || category == "default" {
+	if category == "" || strings.EqualFold(category, "default") {
 		return true
 	}
 	api, ok := p.FindByName(name)
@@ -311,18 +336,29 @@ func (p *ExternalPool) finalURL(ctx context.Context, headers map[string]string, 
 	}
 	defer resp.Body.Close()
 
+	// GET 降级场景下排空响应体（最多 64KB）：不读取直接 Close 会导致
+	// 连接无法复用，高并发时连接池被反复重建
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("external %s returned HTTP %d", method, resp.StatusCode)
 	}
 
-	return resp.Request.URL.String(), nil
+	final := resp.Request.URL.String()
+	// 防御：最终 URL 必须是 http/https（上游异常/被投毒时可能返回其他协议）
+	if !IsValidImageURL(final) {
+		return "", fmt.Errorf("external %s: final URL has invalid scheme", method)
+	}
+	return final, nil
 }
 
 // fetchJSON 发送 GET 请求并解析 JSON 响应体提取图片 URL。
 // 支持自定义请求头（如 Unsplash 的 Authorization）；
 // 未配置 User-Agent 时按 deviceType 注入（供按 UA 自适应的上游使用）。
+// category 为实际使用的分类（写入返回结果，与 fetchRedirect 一致，
+// 而非固定的 "external"）。
 // 响应体限制 10MB，防止 OOM。
-func (p *ExternalPool) fetchJSON(ctx context.Context, api ExternalAPIConfig, url string, width, height int, deviceType model.DeviceType) (*model.Image, error) {
+func (p *ExternalPool) fetchJSON(ctx context.Context, api ExternalAPIConfig, url, category string, width, height int, deviceType model.DeviceType) (*model.Image, error) {
 	// NewRequestWithContext 第 4 个参数为请求体（GET 无 body，传 nil）
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -356,10 +392,15 @@ func (p *ExternalPool) fetchJSON(ctx context.Context, api ExternalAPIConfig, url
 	if imageURL == "" {
 		return nil, fmt.Errorf("external JSON: field %s not found", api.URLField)
 	}
+	// 防御：提取的 URL 必须是 http/https（防上游返回 file:/javascript: 等非法值）
+	imageURL = strings.TrimSpace(imageURL)
+	if !IsValidImageURL(imageURL) {
+		return nil, fmt.Errorf("external JSON: extracted URL has invalid scheme")
+	}
 
 	return &model.Image{
 		URL:      imageURL,
-		Category: "external",
+		Category: category,
 		Width:    width,
 		Height:   height,
 	}, nil

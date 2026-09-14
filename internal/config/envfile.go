@@ -6,6 +6,7 @@ package config
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,8 +51,9 @@ func ReadEnvValues(rootPath string) (map[string]string, error) {
 	return values, nil
 }
 
-// UpdateEnvFile 更新 .env 中的键值：已存在的键替换值行，不存在的追加到末尾；
-// 注释与其他行原样保留。文件不存在时创建（0755 目录权限由调用方保证）。
+// UpdateEnvFile 更新 .env 中的键值：已存在的键替换值行（键匹配大小写不敏感），
+// 不存在的追加到末尾；注释与其他行原样保留。文件不存在时创建（0755 目录权限由调用方保证）。
+// 写入时保留原文件的行尾风格（CRLF/LF），避免 Windows 记事本出现混合行尾。
 func UpdateEnvFile(rootPath string, updates map[string]string) error {
 	path := EnvFile(rootPath)
 
@@ -60,9 +62,21 @@ func UpdateEnvFile(rootPath string, updates map[string]string) error {
 		return err
 	}
 
+	// 检测原文件行尾风格（默认 LF）
+	eol := "\n"
+	if b, rerr := os.ReadFile(path); rerr == nil && bytes.Contains(b, []byte("\r\n")) {
+		eol = "\r\n"
+	}
+
+	// 大小写不敏感的更新表：.env 中 app_port 与 APP_PORT 是同一个键，
+	// 替换时保留原键名写法，避免追加重复键
+	updatesFold := make(map[string]string, len(updates))
+	for k, v := range updates {
+		updatesFold[strings.ToLower(k)] = v
+	}
 	applied := make(map[string]bool, len(updates))
 
-	// 已存在的键：替换值
+	// 已存在的键：替换值（保留原键名写法）
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -73,16 +87,16 @@ func UpdateEnvFile(rootPath string, updates map[string]string) error {
 			continue
 		}
 		key = strings.TrimSpace(key)
-		if newVal, found := updates[key]; found {
+		if newVal, found := updatesFold[strings.ToLower(key)]; found {
 			lines[i] = key + "=" + newVal
-			applied[key] = true
+			applied[strings.ToLower(key)] = true
 		}
 	}
 
 	// 不存在的键：追加到末尾（前插一个空行分隔）
 	var appended []string
 	for key, val := range updates {
-		if !applied[key] {
+		if !applied[strings.ToLower(key)] {
 			appended = append(appended, key+"="+val)
 		}
 	}
@@ -93,7 +107,7 @@ func UpdateEnvFile(rootPath string, updates map[string]string) error {
 		lines = append(lines, appended...)
 	}
 
-	if err := writeLines(path, lines); err != nil {
+	if err := writeLines(path, lines, eol); err != nil {
 		return fmt.Errorf("write .env: %w", err)
 	}
 	return nil
@@ -119,12 +133,13 @@ func readLines(path string) ([]string, error) {
 }
 
 // writeLines 原子写入全部行（先写临时文件再重命名，避免中途崩溃损坏配置）。
-func writeLines(path string, lines []string) error {
+// eol 指定行尾分隔符（保留原文件风格，默认 "\n"）。
+func writeLines(path string, lines []string, eol string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	data := strings.Join(lines, "\n") + "\n"
+	data := strings.Join(lines, eol) + eol
 	if err := os.WriteFile(tmp, []byte(data), 0644); err != nil {
 		return err
 	}

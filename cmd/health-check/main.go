@@ -4,6 +4,7 @@
 //
 //	go run ./cmd/health-check/
 //	go run ./cmd/health-check/ -url http://localhost:8080
+//	go run ./cmd/health-check/ -strict          # 严格模式：degraded 也退出码 1（供 Docker healthcheck）
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 
 func main() {
 	baseURL := flag.String("url", "http://localhost:8080", "img-api server URL")
+	strict := flag.Bool("strict", false, "严格模式：解析 /health 的 status 字段，非 ok 退出码 1（degraded 视为不健康）")
 	flag.Parse()
 
 	// 去除尾部斜杠，避免 base 为 "http://x/" 时拼出 "//health"
@@ -51,5 +53,15 @@ func main() {
 
 	if resp.StatusCode != http.StatusOK {
 		os.Exit(1)
+	}
+
+	// 严格模式：/health 恒返回 HTTP 200（状态在 body 的 status 字段），
+	// 只有解析 status 才能识别 degraded（部分图源不可用）
+	if *strict {
+		status, _ := result["status"].(string)
+		if status != "ok" {
+			fmt.Fprintf(os.Stderr, "❌ service degraded: status=%q\n", status)
+			os.Exit(1)
+		}
 	}
 }

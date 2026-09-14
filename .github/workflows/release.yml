@@ -27,18 +27,36 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          cache: true # 依赖缓存：go.sum 不变时复用模块缓存，加速 CI
 
       - name: Ensure module files are tidy
         # 依赖以仓库锁定的 go.mod / go.sum 为准（升级由本地 go get -u 完成、
-        # gosum.yml 兜底）：检查、Release 产物、Docker 镜像使用同一套锁定版本
-        run: go mod tidy
+        # gosum.yml 兜底）：检查、Release 产物、Docker 镜像使用同一套锁定版本。
+        # tidy 后校验 diff：开发者提交未整理的 go.mod/go.sum 时 CI 变红，
+        # 强制仓库保持整洁（此前 tidy 的整理结果被丢弃、从不检查）
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+      - name: Verify version consistency (tag = CHANGELOG = config.go)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tagver="${GITHUB_REF_NAME#v}"
+          clver=$(awk '/^## \[[0-9]/{gsub(/\[|\]/,""); print $2; exit}' CHANGELOG.md)
+          cfgver=$(grep -o '"APP_VERSION": "[0-9.]*"' internal/config/config.go | grep -o '[0-9.]*')
+          echo "tag=$tagver changelog=$clver config=$cfgver"
+          [ "$tagver" = "$clver" ] && [ "$clver" = "$cfgver" ] || {
+            echo "❌ 版本号三方不一致：tag / CHANGELOG / config.go 必须相同（发布前运行 go run ./cmd/setversion）"
+            exit 1
+          }
 
       - name: Run go vet
         run: go vet ./...
 
       - name: Run staticcheck
-        # 与本地开发一致的深度静态检查（go run 方式，无需预装）
-        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+        # 与本地开发一致的深度静态检查；固定版本保证结果可复现
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
       - name: Run tests
         run: go test ./...
@@ -47,13 +65,28 @@ jobs:
         run: go test -race ./...
 
       - name: Run govulncheck
-        # Go 1.26 已满足最新版 govulncheck 的工具链要求；
-        # 漏洞数据库在扫描时实时拉取，以保持检测结果时效性。
+        # 漏洞数据库在扫描时实时拉取；工具版本固定保证行为可复现
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
           govulncheck ./...
 
-  # ── 构建 & 发布 ──
+  # ── Windows GUI 构建验证 ──
+  # cmd/gui 依赖 CGO（此前 CI 零覆盖，GUI 一直是"盲发"）；
+  # 在真实 Windows 环境验证 GUI 可编译（含 syso 图标资源）
+  gui-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build GUI
+        run: go build -o img-api-gui.exe ./cmd/gui/
+
+  # ── 构建 5 平台二进制并打包 zip（只构建，不创建 Release）──
   release:
     needs: check
     if: startsWith(github.ref, 'refs/tags/v')
@@ -83,6 +116,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          cache: true
 
       - name: Ensure module files are tidy
         run: go mod tidy
@@ -129,16 +163,105 @@ jobs:
           name: img-api-${{ matrix.goos }}-${{ matrix.goarch }}
           path: img-api-${{ matrix.goos }}-${{ matrix.goarch }}.zip
 
+  # ── 创建 Release 并上传全部 zip ──
+  # 单任务执行 get-or-create + upload：此前该步骤放在 5 个矩阵作业内并行执行，
+  # 同时创建同一 tag 的 Release 会触发 GitHub API 422 竞态（Release 缺 zip / 整轮变红）。
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          find . -name '*.zip' -type f -exec sha256sum {} + > SHA256SUMS.txt
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/sbom.spdx.json
+
       - name: Extract current changelog section
         shell: bash
         run: |
           awk '/^## \[[0-9]/{if(found) exit; found=1} found' CHANGELOG.md > release-notes.md
 
-      - name: Upload to Release
+      - name: Create release and upload assets
         uses: softprops/action-gh-release@v1
         with:
           name: ${{ github.ref_name }}
           body_path: release-notes.md
-          files: img-api-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+          files: |
+            dist/img-api-*/img-api-*.zip
+            dist/SHA256SUMS.txt
+            dist/sbom.spdx.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 构建并推送 Docker 镜像 ──
+  # 与 publish 并列依赖 check：测试全绿才构建推送（此前 docker.yml 独立响应 tag，
+  # check 失败时镜像仍会发布、latest 被挪动）；镜像 tag 不带 v 前缀（Docker 惯例）。
+  docker:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要完整 tag 历史判断"当前 tag 是否最新"
+
+      - name: Check if tag is the latest
+        id: latest
+        shell: bash
+        run: |
+          # 仅当当前 tag 是 semver 最新的 v* tag 时才允许更新 latest，
+          # 防止补推旧版本 tag 把 latest 往回挪
+          newest=$(git tag -l 'v*' | sort -V | tail -n1)
+          echo "newest=$newest current=${GITHUB_REF_NAME}"
+          if [ "$newest" = "${GITHUB_REF_NAME}" ]; then
+            echo "publish_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags / labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/chihirosyd/img-api
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ steps.latest.outputs.publish_latest }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

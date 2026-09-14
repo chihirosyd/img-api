@@ -67,3 +67,7 @@ resources/local/pe/default/*
 
 # ── 依赖（用 go mod download 管理）──
 vendor/
+
+# ── 私人文件（审查报告/修复路线图等个人维护文档）──
+# 不进仓库（不随 git 上传）、不随发布包分发（release.yml 只打包 docs/ 等目录）
+private/

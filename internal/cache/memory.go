@@ -2,7 +2,7 @@ package cache
 
 import (
 	"context"
-	"math/rand"
+	"math/rand/v2"
 	"path"
 	"sync"
 	"sync/atomic"
@@ -24,6 +24,11 @@ type memEntry struct {
 // Set 类型操作（SAdd/SRandMember/SCard）使用独立的 RWMutex + map 实现，
 // 与 sync.Map 条目互不干扰，保证并发安全。
 //
+// 并发正确性：
+//   - 过期删除使用 CompareAndDelete（按条目身份删除）：并发 Set 写入新值时
+//     删除失败，不会误删新值；删除成功才扣计数，避免并发双扣导致淘汰上限失效
+//   - Set 使用 LoadOrStore 原子判断"是否新键"：并发 Set 同一新键只有一个会计数
+//
 // 容量限制：最多 maxItems 个缓存条目，超出时随机淘汰旧条目。
 //
 // 限制：
@@ -36,18 +41,24 @@ type MemoryCache struct {
 	setMu    sync.RWMutex                   // 保护 sets
 	maxItems int                            // 最大缓存条目数（0=不限制）
 	count    atomic.Int64                   // 条目数近似值（淘汰判断用，允许微小漂移）
+
+	stopOnce sync.Once     // 保证 Close 只关闭一次 stopCh
+	stopCh   chan struct{} // 通知清理协程退出
+	doneCh   chan struct{} // 清理协程退出信号
 }
 
 const defaultMaxItems = 10000 // 默认最多缓存 10000 个条目
 
 // NewMemoryCache 创建内存缓存并启动后台过期清理协程。
 //
-// 每 5 分钟扫描一次全量条目，删除已过期的。
-// 调用方无需手动停止——清理协程随进程退出自动终止。
+// 清理协程可通过 Close 停止（服务优雅关闭时调用），
+// 不调用 Close 时随进程退出自动终止。
 func NewMemoryCache() *MemoryCache {
 	mc := &MemoryCache{
 		sets:     make(map[string]map[string]struct{}),
 		maxItems: defaultMaxItems,
+		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
 	}
 
 	// 后台定期清理过期条目（每 5 分钟）
@@ -71,8 +82,11 @@ func (m *MemoryCache) Get(ctx context.Context, key string) ([]byte, error) {
 
 	// 检查是否过期
 	if !entry.expire.IsZero() && time.Now().After(entry.expire) {
-		m.items.Delete(key)
-		m.count.Add(-1)
+		// 按条目身份删除：并发 Set 已写入新值时 CompareAndDelete 失败，
+		// 避免误删刚写入的新值；删除成功才扣计数，避免并发双扣漂移。
+		if m.items.CompareAndDelete(key, entry) {
+			m.count.Add(-1)
+		}
 		return nil, Nil
 	}
 
@@ -94,16 +108,18 @@ func (m *MemoryCache) Set(ctx context.Context, key string, value []byte, ttl tim
 		entry.expire = time.Now().Add(ttl)
 	}
 
-	if _, loaded := m.items.Load(key); !loaded {
-		// 容量控制：新增 key 且已达上限 → 随机淘汰一个（O(1) 计数判断）
+	// LoadOrStore 原子判断"是否新键"：并发 Set 同一新键只有一个走淘汰/计数分支，
+	// 避免 count 对同一条目重复计数。
+	if _, loaded := m.items.LoadOrStore(key, entry); !loaded {
+		// 容量控制：新增 key 且已达上限 → 随机淘汰一个（近似，见 evictIfNeeded）
 		if m.maxItems > 0 {
 			m.evictIfNeeded()
 		}
-		m.items.Store(key, entry)
 		m.count.Add(1)
 		return nil
 	}
 
+	// 已有键：覆盖值，计数不变
 	m.items.Store(key, entry)
 	return nil
 }
@@ -115,7 +131,7 @@ func (m *MemoryCache) evictIfNeeded() {
 	}
 
 	// 随机选一个 key 淘汰
-	target := rand.Intn(m.maxItems) // 索引范围 [0, maxItems)，与遍历序号对齐
+	target := rand.IntN(m.maxItems) // 索引范围 [0, maxItems)，与遍历序号对齐
 	i := 0
 	m.items.Range(func(key, _ any) bool {
 		if i == target {
@@ -136,20 +152,38 @@ func (m *MemoryCache) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Close 停止后台清理协程（可重复调用，幂等）。
+// 关闭后缓存仍可读写，仅不再自动清理过期条目。
+func (m *MemoryCache) Close() error {
+	m.stopOnce.Do(func() { close(m.stopCh) })
+	<-m.doneCh
+	return nil
+}
+
 // cleanupLoop 定期清理过期条目
 func (m *MemoryCache) cleanupLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now()
-		m.items.Range(func(key, value any) bool {
-			entry := value.(*memEntry)
-			if !entry.expire.IsZero() && now.After(entry.expire) {
-				m.items.Delete(key)
-				m.count.Add(-1)
-			}
-			return true
-		})
+	defer func() {
+		ticker.Stop()
+		close(m.doneCh)
+	}()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			m.items.Range(func(key, value any) bool {
+				entry := value.(*memEntry)
+				if !entry.expire.IsZero() && now.After(entry.expire) {
+					// 与 Get 一致：按条目身份删除，删除成功才扣计数
+					if m.items.CompareAndDelete(key, entry) {
+						m.count.Add(-1)
+					}
+				}
+				return true
+			})
+		case <-m.stopCh:
+			return
+		}
 	}
 }
 
@@ -189,7 +223,7 @@ func (m *MemoryCache) SRandMember(ctx context.Context, key string) (string, erro
 	}
 	m.setMu.RUnlock()
 
-	return members[rand.Intn(len(members))], nil
+	return members[rand.IntN(len(members))], nil
 }
 
 // SCard 返回内存 Set 的成员数量（并发安全）。

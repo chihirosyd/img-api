@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +151,29 @@ func TestServeLocalFile(t *testing.T) {
 	}
 }
 
+// TestServeLocalFileSymlinkBlocked 符号链接（即使指向项目根目录内的图片）→ 403。
+// Windows 创建符号链接需要开发者模式/管理员权限，跳过（Linux CI 覆盖）。
+func TestServeLocalFileSymlinkBlocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows; covered on Linux CI")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "real.jpg"), []byte("imgdata"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.jpg")
+	if err := os.Symlink(filepath.Join(root, "real.jpg"), link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	h := &APIHandler{rootPath: root}
+	w, r := newTestContext("")
+	h.serveLocalFile(w, r, link)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (symlink blocked)", w.Code)
+	}
+}
+
 func TestFormatDuration(t *testing.T) {
 	cases := []struct {
 		in   time.Duration
@@ -258,5 +282,57 @@ func TestRandomHandler(t *testing.T) {
 	h.Random(w, r)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("empty local source status = %d, want 503", w.Code)
+	}
+
+	// 回归 Z9：超长 category 参数 → 400（防日志膨胀/响应放大）
+	w, r = newTestContext("?category=" + strings.Repeat("a", 129))
+	h.Random(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized category status = %d, want 400", w.Code)
+	}
+
+	// 回归 Z9：超长 api 参数 → 400
+	w, r = newTestContext("?source=external&api=" + strings.Repeat("b", 129))
+	h.Random(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized api status = %d, want 400", w.Code)
+	}
+}
+
+// TestRandomLocalRedirectAutoDegrade 回归 Z10：
+// source=local 且 mode 为默认 redirect 时自动降级为 image（服务端直接出图），
+// 不再返回 400 破图。
+func TestRandomLocalRedirectAutoDegrade(t *testing.T) {
+	root := t.TempDir()
+	localDir := filepath.Join(root, "resources", "local", "pc", "default")
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "b.png"), []byte("pngdata"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := service.NewStats()
+	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
+	h := NewAPIHandler(root, svc, stats)
+
+	// 不传 mode（默认 redirect）→ 自动降级 image，直接输出图片内容
+	w, r := newTestContext("?source=local")
+	h.Random(w, r)
+	if w.Code != http.StatusOK || w.Body.String() != "pngdata" {
+		t.Fatalf("local default mode: status=%d body=%q, want 200 + pngdata", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", ct)
+	}
+
+	// mode=json → url 字段为相对图库根目录路径（回归 L11：不泄露服务器绝对路径）
+	w, r = newTestContext("?source=local&mode=json")
+	h.Random(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pc/default/b.png") {
+		t.Fatalf("local json: status=%d body=%q, want relative path", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), filepath.ToSlash(root)) {
+		t.Fatalf("local json leaked absolute root path: %q", w.Body.String())
 	}
 }

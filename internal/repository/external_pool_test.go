@@ -1,7 +1,11 @@
 package repository
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"img-api/internal/model"
 )
@@ -39,7 +43,7 @@ func TestUserAgentFor(t *testing.T) {
 }
 
 // TestBuildRequestHeaders 验证请求头构建：无 User-Agent 时按设备注入；
-// 已显式配置（大小写不敏感）时优先保留配置值。
+// 已显式配置（大小写不敏感）时优先保留配置值（统一写入规范键 User-Agent）。
 func TestBuildRequestHeaders(t *testing.T) {
 	// 未配置 UA → 注入手机 UA
 	h := buildRequestHeaders(map[string]string{"Authorization": "Bearer x"}, model.DevicePE)
@@ -50,13 +54,16 @@ func TestBuildRequestHeaders(t *testing.T) {
 		t.Errorf("buildRequestHeaders lost Authorization header")
 	}
 
-	// 已配置 UA（小写键）→ 保留配置值，不覆盖
+	// 已配置 UA（小写键）→ 保留配置值，写入规范键 User-Agent
 	h = buildRequestHeaders(map[string]string{"user-agent": "custom-ua/1.0"}, model.DevicePC)
-	if got := h["user-agent"]; got != "custom-ua/1.0" {
+	if got := h["User-Agent"]; got != "custom-ua/1.0" {
 		t.Errorf("buildRequestHeaders(custom UA) = %q, want custom-ua/1.0", got)
 	}
-	if _, ok := h["User-Agent"]; ok {
-		t.Error("buildRequestHeaders should not add User-Agent when already configured (case-insensitive)")
+
+	// 大小写重复的 UA 键 → 优先采用规范键 "User-Agent" 的值（确定性行为）
+	h = buildRequestHeaders(map[string]string{"user-agent": "lowercase", "User-Agent": "canonical"}, model.DevicePC)
+	if got := h["User-Agent"]; got != "canonical" {
+		t.Errorf("buildRequestHeaders(duplicate UA) = %q, want canonical key value", got)
 	}
 }
 
@@ -155,5 +162,125 @@ func TestAPISupportsCategory(t *testing.T) {
 		if got := pool.APISupportsCategory(c.name, c.category); got != c.want {
 			t.Errorf("APISupportsCategory(%q, %q) = %v, want %v", c.name, c.category, got, c.want)
 		}
+	}
+}
+
+// ── 集成测试（httptest）：外部 API 池此前仅有纯函数单测，
+// fetchRedirect / fetchJSON 的 HTTP 全流程无覆盖 ──
+
+// testPool 构造直连 httptest 的池（用普通 client 绕过 netx 的本地地址拦截，
+// 单元测试聚焦协议解析逻辑）。
+func testPool(apis ...ExternalAPIConfig) *ExternalPool {
+	return &ExternalPool{
+		apis:   apis,
+		client: &http.Client{Timeout: 5 * time.Second},
+	}
+}
+
+// TestFetchRedirectIntegration HEAD 302 → 最终 URL 校验 + 实际分类写入。
+// 重定向目标保持在测试服务器内（外网域名在 CI 无网络时不可达）。
+func TestFetchRedirectIntegration(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/img", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/final.jpg", http.StatusFound)
+	})
+	mux.HandleFunc("/final.jpg", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	api := ExternalAPIConfig{Name: "t", URL: ts.URL + "/img"}
+	img, err := testPool(api).fetchRedirect(context.Background(), api, ts.URL+"/img", "anime", 800, 600, model.DevicePC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.URL != ts.URL+"/final.jpg" {
+		t.Fatalf("URL = %q, want final redirect URL %q", img.URL, ts.URL+"/final.jpg")
+	}
+	if img.Category != "anime" {
+		t.Fatalf("Category = %q, want anime（实际生效分类）", img.Category)
+	}
+}
+
+// TestFetchRedirectHead405Fallback HEAD 被拒（405）时降级 GET 重试。
+func TestFetchRedirectHead405Fallback(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/img", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		http.Redirect(w, r, "/final.jpg", http.StatusFound)
+	})
+	mux.HandleFunc("/final.jpg", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	api := ExternalAPIConfig{Name: "t", URL: ts.URL + "/img"}
+	img, err := testPool(api).fetchRedirect(context.Background(), api, ts.URL+"/img", "", 800, 600, model.DevicePC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.URL != ts.URL+"/final.jpg" {
+		t.Fatalf("URL = %q, want GET fallback result %q", img.URL, ts.URL+"/final.jpg")
+	}
+}
+
+// TestFetchRedirectNon2xx 上游 500 → 错误（计入熔断失败）。
+func TestFetchRedirectNon2xx(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	api := ExternalAPIConfig{Name: "t", URL: ts.URL + "/img"}
+	if _, err := testPool(api).fetchRedirect(context.Background(), api, ts.URL+"/img", "", 800, 600, model.DevicePC); err == nil {
+		t.Fatal("expected error for HTTP 500")
+	}
+}
+
+// TestFetchJSONIntegration 字段提取 + 实际分类写入。
+func TestFetchJSONIntegration(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"urls":{"raw":"https://cdn.example.com/j.jpg"}}`))
+	}))
+	defer ts.Close()
+
+	api := ExternalAPIConfig{Name: "t", URL: ts.URL, URLField: "urls.raw"}
+	img, err := testPool(api).fetchJSON(context.Background(), api, ts.URL, "scenery", 800, 600, model.DevicePC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.URL != "https://cdn.example.com/j.jpg" || img.Category != "scenery" {
+		t.Fatalf("img = %+v, want url + category=scenery", img)
+	}
+}
+
+// TestFetchJSONMissingField 字段缺失 → 错误。
+func TestFetchJSONMissingField(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"foo":"bar"}`))
+	}))
+	defer ts.Close()
+
+	api := ExternalAPIConfig{Name: "t", URL: ts.URL, URLField: "urls.raw"}
+	if _, err := testPool(api).fetchJSON(context.Background(), api, ts.URL, "", 800, 600, model.DevicePC); err == nil {
+		t.Fatal("expected error for missing field")
+	}
+}
+
+// TestFetchJSONInvalidScheme 提取的 URL 非 http(s) → 错误（防透出非法协议）。
+func TestFetchJSONInvalidScheme(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"url":"ftp://example.com/a.jpg"}`))
+	}))
+	defer ts.Close()
+
+	api := ExternalAPIConfig{Name: "t", URL: ts.URL, URLField: "url"}
+	if _, err := testPool(api).fetchJSON(context.Background(), api, ts.URL, "", 800, 600, model.DevicePC); err == nil {
+		t.Fatal("expected error for non-http(s) scheme")
 	}
 }

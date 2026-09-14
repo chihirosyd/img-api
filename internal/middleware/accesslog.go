@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"img-api/internal/config"
@@ -35,8 +34,8 @@ func AccessLog() Middleware {
 	trusted := parseTrustedProxies(config.C.TrustedProxies)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 健康检查探测不记录日志，直接放行
-			if strings.HasPrefix(r.URL.Path, "/health") {
+			// 健康检查探测不记录日志，直接放行（精确匹配，避免误伤 /healthz 等未来路径）
+			if r.URL.Path == "/health" {
 				next.ServeHTTP(w, r)
 				return
 			}

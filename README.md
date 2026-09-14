@@ -21,7 +21,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 - 💾 **Redis 缓存** — SRandMember O(1) 随机 + 内存自动降级
 - ⚡ **熔断保护** — 外部 API 异常三态熔断，保障服务稳定
 - 🛡️ **安全防护** — IP 限流 + Referer 防盗链 + SSRF 防护 + 安全响应头
-- 🔑 **健康检查** — `/health` 返回完整内部状态与运行时统计
+- 🔑 **健康检查** — `/health` 返回完整内部状态与运行时统计；`health-check -strict` 可让 `degraded`（部分图源不可用）触发容器 unhealthy
 - 💡 **友好提示页** — 图源未配置 / 分类或 API 不存在时返回引导页（HTML / JSON / SVG 占位图）
 - 🏠 **根路径首页** — 浏览器访问 `/` 展示教程页 + 运行状态仪表盘（状态/累计与今日统计/图源健康，分类清单仅 Debug 展示），`<img>` 嵌入时仍直接出图
 - 🗂️ **本地图片索引** — `local.json` 首启自动生成，支持定时自动刷新，无索引时自动扫目录兜底
@@ -99,11 +99,12 @@ GET /random?type=auto&source=txt&mode=redirect&category=default
 | `type` | string | `auto` | `auto` / `pc` / `pe` |
 | `source` | string | `txt` | `txt` / `local` / `external` |
 | `mode` | string | `redirect` | `redirect` / `json` / `image` |
-| `category` | string | `default` | 逗号分隔多选（如 `anime,scenery`） |
+| `category` | string | `default` | 逗号分隔多选（如 `anime,scenery`），最长 128 字节 |
 | `api` | string | — | 指定池中具体的外部 API（需配合 `source=external`；值为 `image.yaml` 中该项的 `name`，不传则随机选一个） |
 
-> ⚠️ `source=local` 不支持 `mode=redirect`（返回 400）：本地图源返回的是文件系统路径，
-> 无法通过 302 让浏览器访问，请使用 `mode=image` 或 `mode=json`。
+> ⚠️ `source=local` 不支持 302 跳转（图源返回的是文件系统路径）：`mode=redirect`
+> 会**自动降级为 `mode=image`**（服务端直接输出图片），也可显式使用
+> `mode=image` / `mode=json`。
 
 > 💡 `source` 与 `api` 是两层选择：`source=external` 先进入"外部 API 池"渠道，
 > `api=flickr` 再指定渠道内具体哪个 API（值对应 `image.yaml` 中某项的 `name`）；
@@ -234,7 +235,7 @@ https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=1920
 ```
 
 **默认分类**：`default.txt` 已随项目提供（Docker 远程镜像部署时首次启动自动生成，含注释示例）。
-**新增分类**：在 `resources/txt/pc/` 下新建 `分类名.txt`，填好 URL，即时生效。
+**新增分类**：在 `resources/txt/pc/` 下新建 `分类名.txt`（文件名中的**英文字母请使用小写**，如 `anime.txt`；中文分类名如 `风景.txt` 直接使用即可），填好 URL，即时生效。
 向已有分类中增删 URL：自动感知文件变化，即时生效。
 
 > ⚠️ 若启用了 Redis 并运行过 sync-redis，TXT 文件的改动不会自动同步到 Redis，

@@ -60,11 +60,13 @@ func main() {
 	dotGray := color.NRGBA{R: 0x9c, G: 0xa3, B: 0xaf, A: 0xff}
 	heroWhite := color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
 	heroDim := color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xb0} // 副文字 69% 白
+	// 服务启动前就显示 .env 中配置的端口（不再闪现硬编码 8080）
+	envValues, _ := config.ReadEnvValues(rootPath)
 	statusDot := canvas.NewCircle(dotGray)
 	statusLabel := canvas.NewText("服务已停止", heroWhite)
 	statusLabel.TextSize = 16
 	statusLabel.TextStyle = fyne.TextStyle{Bold: true}
-	urlLabel := canvas.NewText("http://127.0.0.1:8080", heroDim)
+	urlLabel := canvas.NewText("http://127.0.0.1:"+getDefault(envValues, "APP_PORT", "8080"), heroDim)
 	urlLabel.TextSize = 12
 	versionLabel := widget.NewLabel("img-api")
 	refreshStatus := func() {
@@ -170,7 +172,7 @@ func main() {
 	dirBtn.Importance = widget.LowImportance
 
 	// ── 设置表单（核心 6 项）──
-	values, _ := config.ReadEnvValues(rootPath)
+	values := envValues
 
 	portEntry := widget.NewEntry()
 	portEntry.SetText(getDefault(values, "APP_PORT", "8080"))
@@ -221,6 +223,9 @@ func main() {
 		stopSrv()
 		if err := startSrv(); err != nil {
 			showError(fmt.Sprintf("重启失败：%v", err), w)
+			refreshStatus()
+			flash("⚠️ 设置已保存，但服务重启失败")
+			return
 		}
 		refreshStatus()
 		flash("✅ 设置已保存并重启")

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"img-api/internal/model"
 )
@@ -37,7 +38,7 @@ func (r *ExternalRepository) Random(ctx context.Context, category string, device
 // Health 检查外部 API 池是否配置了至少一个端点。
 func (r *ExternalRepository) Health(ctx context.Context) error {
 	if r.pool == nil || len(r.pool.APIs()) == 0 {
-		return &model.ErrRepoHealth{Source: "external", Err: nil}
+		return &model.ErrRepoHealth{Source: "external", Err: errors.New("no external APIs configured")}
 	}
 	return nil
 }

@@ -11,7 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -44,6 +44,10 @@ type RandomService struct {
 	// 对每个分类名单独做文件系统探测（与 emptyCheckAt 相同的缓存策略）
 	catAt    time.Time
 	catCache categorySnapshot
+
+	// rebuildMu 串行化快照/空置检查的重建：缓存过期瞬间多个请求并发
+	// 触发时只有一个 goroutine 真正扫盘，其余等待后复用结果
+	rebuildMu sync.Mutex
 }
 
 // NewRandomService 创建服务实例。
@@ -178,19 +182,26 @@ func (s *RandomService) randomFromExternal(ctx context.Context, apiName, categor
 	return img, nil
 }
 
-// Health 检查所有已初始化仓库和外部 API 池的健康状态（线程安全）
+// Health 检查所有已初始化仓库和外部 API 池的健康状态（线程安全）。
+// 仓库健康检查可能涉及磁盘 IO：先拷贝仓库列表再解锁执行，避免持锁 IO
+// 阻塞 GetRepo 等写锁路径。
 func (s *RandomService) Health(ctx context.Context) map[string]string {
 	result := make(map[string]string)
 
 	s.mu.RLock()
+	repos := make(map[model.SourceType]repository.ImageRepository, len(s.repos))
 	for source, repo := range s.repos {
+		repos[source] = repo
+	}
+	s.mu.RUnlock()
+
+	for source, repo := range repos {
 		if err := repo.Health(ctx); err != nil {
 			result[string(source)] = fmt.Sprintf("unhealthy: %v", err)
 		} else {
 			result[string(source)] = "healthy"
 		}
 	}
-	s.mu.RUnlock()
 
 	// 外部 API 池
 	if s.externalPool == nil {
@@ -203,6 +214,7 @@ func (s *RandomService) Health(ctx context.Context) map[string]string {
 
 	// 熔断器
 	result["circuit_breaker"] = s.breakr.State().String()
+	result["circuit_trips"] = fmt.Sprintf("%d", s.breakr.Trips())
 
 	// 缓存
 	if s.cache != nil {
@@ -222,6 +234,23 @@ func (s *RandomService) BreakerState() string {
 // Stats 返回统计实例
 func (s *RandomService) Stats() *Stats {
 	return s.stats
+}
+
+// Close 停止所有已初始化仓库的后台任务（本地索引 cron 调度器等），
+// 供服务优雅关闭时调用，防止 GUI 反复重启泄漏 goroutine。
+func (s *RandomService) Close() {
+	s.mu.RLock()
+	repos := make([]repository.ImageRepository, 0, len(s.repos))
+	for _, repo := range s.repos {
+		repos = append(repos, repo)
+	}
+	s.mu.RUnlock()
+
+	for _, repo := range repos {
+		if stopper, ok := repo.(interface{ Stop() }); ok {
+			stopper.Stop()
+		}
+	}
 }
 
 // SourceEmpty 判断指定图源是否未配置内容（按渠道分别检测）。
@@ -295,11 +324,12 @@ func (s *RandomService) CategoryExistsFor(source model.SourceType, category stri
 // external 图源返回 nil（分类由各 API 动态决定，无全局列表）。
 // 结果来自 30 秒快照缓存；调用方只读，不得修改返回切片。
 func (s *RandomService) AvailableCategories(source model.SourceType) []string {
+	// 返回浅拷贝：快照缓存与调用方共享底层数组，调用方误改会污染 30s 缓存
 	switch source {
 	case model.SourceTxt:
-		return s.categorySnapshot().txtAll
+		return append([]string(nil), s.categorySnapshot().txtAll...)
 	case model.SourceLocal:
-		return s.categorySnapshot().localAll
+		return append([]string(nil), s.categorySnapshot().localAll...)
 	default:
 		return nil
 	}
@@ -356,7 +386,20 @@ func (s *RandomService) categorySnapshotNow() categorySnapshot {
 }
 
 // categorySnapshot 返回 30 秒内的分类清单快照（过期自动重建）。
+// rebuildMu + 双检：缓存过期瞬间多个请求并发触发时只重建一次。
 func (s *RandomService) categorySnapshot() categorySnapshot {
+	s.mu.RLock()
+	if time.Since(s.catAt) < 30*time.Second {
+		snap := s.catCache
+		s.mu.RUnlock()
+		return snap
+	}
+	s.mu.RUnlock()
+
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+
+	// 双检：等锁期间可能已被其他 goroutine 重建
 	s.mu.RLock()
 	if time.Since(s.catAt) < 30*time.Second {
 		snap := s.catCache
@@ -421,6 +464,18 @@ func (s *RandomService) checkSourcesEmpty() map[model.SourceType]bool {
 	}
 	s.mu.RUnlock()
 
+	// rebuildMu + 双检：与 categorySnapshot 相同，过期瞬间只扫描一次
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+
+	s.mu.RLock()
+	if time.Since(s.emptyCheckAt) < 30*time.Second && len(s.sourceEmptyMap) == 3 {
+		cached := s.sourceEmptyMap
+		s.mu.RUnlock()
+		return cached
+	}
+	s.mu.RUnlock()
+
 	result := map[model.SourceType]bool{
 		model.SourceTxt:      !txtDirHasContent(filepath.Join(s.rootPath, "resources", "txt")),
 		model.SourceLocal:    !localDirHasImages(filepath.Join(s.rootPath, "resources", "local")),
@@ -444,7 +499,8 @@ func (s *RandomService) checkSourcesEmpty() map[model.SourceType]bool {
 // Handler 渲染"分类不存在"提示页时也使用本方法，保证提示页显示的分类
 // 与实际使用的分类一致。
 func (s *RandomService) ResolveDefaultCategory(source model.SourceType, raw string) string {
-	if source == model.SourceExternal || (raw != "" && raw != "default") {
+	// "default" 判定大小写不敏感（与 type/source/mode 参数归一化一致）
+	if source == model.SourceExternal || (raw != "" && !strings.EqualFold(raw, "default")) {
 		return raw
 	}
 
@@ -458,6 +514,13 @@ func (s *RandomService) ResolveDefaultCategory(source model.SourceType, raw stri
 		}
 	}
 	if v := strings.TrimSpace(configured); v != "" {
+		// 配置的默认分类与 query 参数同口径校验：拒绝路径分隔符与 ..
+		// （防误配后拼接出图库外路径；非法值回退内置 default 并告警）
+		if strings.ContainsAny(v, `/\`) || strings.Contains(v, "..") {
+			logger.L.Warn("configured default category invalid, falling back to built-in default",
+				"source", source, "value", v)
+			return "default"
+		}
 		return v
 	}
 	return "default"
@@ -493,7 +556,7 @@ func (s *RandomService) pickExistingCategory(source model.SourceType, raw string
 	if len(existing) == 0 {
 		return "" // 全部不可用，通知 Handler 显示"分类不存在"
 	}
-	return existing[rand.Intn(len(existing))]
+	return existing[rand.IntN(len(existing))]
 }
 
 // splitCategories 将逗号分隔的类别字符串解析为去重后的分类切片。

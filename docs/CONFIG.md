@@ -27,10 +27,10 @@
 
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `RATE_LIMIT_ENABLED` | bool | `true` | 是否开启内置 IP 限流（纯内存实现：重启清零、多副本各自计数）。前方有 Nginx/OpenResty 时建议关闭并改用网关的 `limit_req`，否则需配合 `TRUSTED_PROXIES` 才能按真实访客统计 |
+| `RATE_LIMIT_ENABLED` | bool | `true` | 是否开启内置 IP 限流（纯内存实现：重启清零、多副本各自计数）。429 响应附 `Retry-After: 60`；`/health` 探针不计入限流；OPTIONS 预检计入。前方有 Nginx/OpenResty 时建议关闭并改用网关的 `limit_req`，否则需配合 `TRUSTED_PROXIES` 才能按真实访客统计 |
 | `RATE_LIMIT_MAX` | int | `60` | 每分钟每 IP 最大请求数（`RATE_LIMIT_ENABLED=true` 时生效） |
-| `REFERER_WHITELIST` | string | — | 防盗链域名白名单，逗号分隔（如 `mysite.com,blog.mysite.com`）。空 Referer 默认放行；留空 = 不限制。经 Nginx 转发后依然生效 |
-| `TRUSTED_PROXIES` | string | — | 可信反代网段（逗号分隔 CIDR，如 `172.17.0.0/16`）。仅当请求来自这些网段时，限流器与应用自带访问日志（`storage/logs`）才信任 `X-Forwarded-For`/`X-Real-IP`；留空 = 一律按 TCP 对端 IP（防伪造）。限流交给网关后仍建议填写，应用自带日志才能记录真实访客 IP（网关自身的日志不受影响，本就能记录真实 IP） |
+| `REFERER_WHITELIST` | string | — | 防盗链域名白名单，逗号分隔（如 `mysite.com,blog.mysite.com`）。仅作用于图片接口（`/` 首页与 `/health` 不拦截）；空 Referer 默认放行（盗链站可用 `referrerpolicy=no-referrer` 绕过，仅拦截普通盗链）；留空 = 不限制。经 Nginx 转发后依然生效 |
+| `TRUSTED_PROXIES` | string | — | 可信反代网段（逗号分隔 CIDR，如 `172.17.0.0/16`）。仅当请求来自这些网段时，限流器与应用自带访问日志（`storage/logs`）才信任 `X-Forwarded-For`/`X-Real-IP`（且值必须是合法 IP，否则按对端 IP）；留空 = 一律按 TCP 对端 IP（防伪造）。网段务必填窄（覆盖网关即可），且网关须**覆盖**客户端伪造的 XFF（`proxy_set_header X-Forwarded-For $remote_addr;`，不要透传 `$http_x_forwarded_for`）。限流交给网关后仍建议填写，应用自带日志才能记录真实访客 IP（网关自身的日志不受影响，本就能记录真实 IP） |
 | `CORS_ENABLED` | bool | `true` | 是否添加跨域响应头。`<img>` 标签嵌图不需要跨域；只有其他网站的 JS 调用本 API 才需要。Nginx 已处理时可关闭（仅一侧开启，勿两边同开） |
 
 ---
@@ -148,6 +148,9 @@ OPEN ──超时后──→ HALF_OPEN（放行 3 个请求探测）
 HALF_OPEN ──任一成功──→ CLOSED
 HALF_OPEN ──任一失败──→ OPEN
 ```
+
+> 📌 客户端取消/超时的请求不计入失败次数；熔断器累计进入 OPEN 的次数可在
+> `/health` 的 `checks.circuit_trips` 查看。
 
 ---
 

@@ -44,4 +44,13 @@ func TestRequestID(t *testing.T) {
 	if n := len([]rune(got)); n != 64 {
 		t.Fatalf("truncated rune length = %d, want 64", n)
 	}
+
+	// 含控制字符的客户端 ID → 重新生成（防御性清洗：该值会回写响应头）
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Request-ID", "bad\x01id")
+	wrapped.ServeHTTP(w, req)
+	if got := w.Header().Get("X-Request-ID"); got == "bad\x01id" || len(got) != 16 {
+		t.Fatalf("control-char id should be regenerated, got %q", got)
+	}
 }

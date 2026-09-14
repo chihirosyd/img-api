@@ -1,15 +1,14 @@
-# 推送 tag（v*）时自动构建多架构 Docker 镜像并推送到 GitHub Container Registry (GHCR)
+# 镜像构建验证与手动推送
 #
-# 镜像地址：ghcr.io/chihirosyd/img-api:latest
-# 触发方式：git tag v1.4.0 && git push origin v1.4.0
-#
-# ⚠️ 首次推送后：到仓库的 Packages 页面将镜像可见性改为 Public，
-#    否则其他用户无法匿名拉取。
-name: Build Docker Image
+# ⚠️ tag 推送的镜像发布已移至 release.yml 的 docker job（needs: check）：
+# go vet / staticcheck / test / race / govulncheck 全绿后才构建推送，
+# 避免测试失败时镜像仍被发布、latest 被挪动。
+# 本工作流仅保留两种场景：
+#   - PR：验证 Dockerfile 能正常构建（不推送）
+#   - workflow_dispatch：手动触发构建并推送（人工确认，不走 tag 门禁）
+name: Build Docker Image (PR verify / manual)
 
 on:
-  push:
-    tags: ["v*"]
   pull_request:
     branches: [main, master]
   workflow_dispatch: # 支持手动触发
@@ -50,8 +49,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          # 仅在推送 tag 时推送到 GHCR；PR 仅验证能否构建
-          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          # PR 仅验证能否构建；workflow_dispatch 手动推送（人工确认）
+          push: ${{ github.event_name == 'workflow_dispatch' }}
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

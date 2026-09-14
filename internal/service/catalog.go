@@ -6,12 +6,20 @@ package service
 
 import (
 	"bufio"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"img-api/internal/model"
+	"img-api/internal/repository"
 )
+
+// txtLineValid 判定一行是否有效图片 URL：非空、非注释、且为 http/https
+// （与 repository.ReadTxtLines 的过滤规则一致）。
+func txtLineValid(line string) bool {
+	return line != "" && !strings.HasPrefix(line, "#") && repository.IsValidImageURL(line)
+}
 
 // txtDirHasContent 检查 TXT 图库目录下是否存在含有效 URL 的 .txt 文件。
 // 有效 URL：非空行且不以 # 开头（与 TxtRepository.readLines 规则一致）。
@@ -32,11 +40,15 @@ func txtDirHasContent(root string) bool {
 			hasURL := false
 			scanner := bufio.NewScanner(f)
 			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if line != "" && !strings.HasPrefix(line, "#") {
+				if txtLineValid(strings.TrimSpace(scanner.Text())) {
 					hasURL = true
 					break
 				}
+			}
+			// 超长行（>64KB）视为"有内容"：读取路径（ReadTxtLines）会显式报错，
+			// 两条路径结论一致，避免此处判"无内容"→404、读取处→500 的矛盾
+			if !hasURL && errors.Is(scanner.Err(), bufio.ErrTooLong) {
+				hasURL = true
 			}
 			f.Close()
 			if hasURL {
@@ -81,11 +93,14 @@ func txtCategoryExistsForDevice(root, device, category string) bool {
 	hasURL := false
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
+		if txtLineValid(strings.TrimSpace(scanner.Text())) {
 			hasURL = true
 			break
 		}
+	}
+	// 超长行视为"有内容"（与 txtDirHasContent 一致）
+	if !hasURL && errors.Is(scanner.Err(), bufio.ErrTooLong) {
+		hasURL = true
 	}
 	return hasURL
 }
@@ -102,7 +117,9 @@ func txtCategoriesForDevice(root, device string) []string {
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".txt") {
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), ".txt")
+		// 分类文件名统一按小写处理：英文字母归一化为小写（避免 ANIME.TXT 与
+		// anime.txt 被视为不同分类）；中文无大小写，ToLower 原样保留
+		name := strings.TrimSuffix(strings.ToLower(e.Name()), ".txt")
 		if txtCategoryExistsForDevice(root, device, name) {
 			result = append(result, name)
 		}

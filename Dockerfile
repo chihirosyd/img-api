@@ -3,16 +3,17 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
-# 安装 git（go mod 需要）
-RUN apk add --no-cache git
+# 先复制依赖清单并下载：依赖层可缓存，源码变更时无需重新拉取
+COPY go.mod go.sum ./
+# go.sum 完整时无需 git（所有依赖经 module proxy 下载）
+RUN go mod download
 
-# 复制全部源码（含 go.mod），一次性编译所有入口
+# 再复制源码（含 go.mod），一次性编译所有入口
 COPY . .
 # 依赖以仓库锁定的 go.mod / go.sum 为准（不现场升级）：
 # 镜像与 Release 二进制、CI 检查使用同一套锁定版本；
 # 依赖升级由发布前本地 go get -u + tidy 完成（gosum.yml 兜底）
-RUN go mod download && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o img-api ./cmd/server/ && \
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o img-api ./cmd/server/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o build-index ./cmd/build-index/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o sync-redis ./cmd/sync-redis/ && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o health-check ./cmd/health-check/
@@ -21,10 +22,13 @@ RUN go mod download && \
 # alpine 3.22：3.19 已于 2025-11 停止维护
 FROM alpine:3.22
 
+# 时区可构建期覆盖：docker build --build-arg TZ=Europe/Berlin
+ARG TZ="Asia/Shanghai"
+
 # ca-certificates: HTTPS 请求所需；tzdata: 时区；su-exec: root→非root 降权
 RUN apk add --no-cache ca-certificates tzdata su-exec && \
-    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-    echo "Asia/Shanghai" > /etc/timezone && \
+    cp /usr/share/zoneinfo/${TZ} /etc/localtime && \
+    echo "${TZ}" > /etc/timezone && \
     # 创建非 root 运行用户（uid=1000）
     addgroup -g 1000 appgroup && \
     adduser -u 1000 -G appgroup -s /bin/sh -D appuser

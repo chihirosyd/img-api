@@ -70,12 +70,13 @@ func main() {
 		}
 
 		validCategories := make(map[string]bool)
+		// 与主服务一致：分类文件名按小写处理（英文字母归一化为小写；中文无大小写，原样保留）
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".txt") {
 				continue
 			}
 
-			category := strings.TrimSuffix(entry.Name(), ".txt")
+			category := strings.TrimSuffix(strings.ToLower(entry.Name()), ".txt")
 			txtPath := filepath.Join(deviceDir, entry.Name())
 
 			// 读取 TXT 文件中的 URL（解析规则与主服务 TxtRepository 一致）

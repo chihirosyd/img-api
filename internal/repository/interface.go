@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"img-api/internal/cache"
+	"img-api/internal/logger"
 	"img-api/internal/model"
 )
 
@@ -56,6 +57,8 @@ func SourceByName(name model.SourceType, rootPath string, externalPool *External
 	case model.SourceExternal:
 		return NewExternalRepository(externalPool)
 	default:
-		return NewTxtRepository(filepath.Join(rootPath, "resources", "txt"), c) // 兜底
+		// 未知来源：配置拼写错误（如 "externalx"）不应静默提供 txt 内容
+		logger.L.Warn("unknown source type, falling back to txt repository", "source", name)
+		return NewTxtRepository(filepath.Join(rootPath, "resources", "txt"), c)
 	}
 }

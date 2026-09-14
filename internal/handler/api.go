@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -200,14 +201,10 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// local 图源返回的是文件系统路径，302 重定向后浏览器无法访问该路径，
-	// 因此 local 源必须使用 mode=image（服务端直接输出）或 mode=json。
+	// 因此 local 源不支持 redirect：显式或默认的 redirect 自动降级为 image
+	//（服务端直接输出图片），保证 <img> 嵌入与 DEFAULT_SOURCE=local 时开箱即用。
 	if params.Source == model.SourceLocal && params.Mode == model.ModeRedirect {
-		h.stats.RecordFail()
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"code":    400,
-			"message": "local source does not support mode=redirect, use mode=image or mode=json",
-		})
-		return
+		params.Mode = model.ModeImage
 	}
 	// 分类名安全校验：拒绝路径分隔符与 ..（分类仅用于拼接文件路径/Redis key）
 	if strings.ContainsAny(params.Category, `/\`) || strings.Contains(params.Category, "..") {
@@ -215,6 +212,23 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":    400,
 			"message": "invalid category: must not contain path separators or '..'",
+		})
+		return
+	}
+	// 参数长度上限：category/api 会写入日志与提示页，超长输入会造成日志膨胀与响应放大
+	if len(params.Category) > 128 {
+		h.stats.RecordFail()
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code":    400,
+			"message": "invalid category: too long (max 128 bytes)",
+		})
+		return
+	}
+	if len(params.APIName) > 128 {
+		h.stats.RecordFail()
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code":    400,
+			"message": "invalid api: too long (max 128 bytes)",
 		})
 		return
 	}
@@ -247,15 +261,15 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 
 		// 图源有内容，但请求的分类不存在 → "分类不存在"提示页。
 		// 分类在另一设备目录存在、当前设备目录缺失（如 pc 有、pe 没有）时，
-		// 对该设备同样返回"分类不存在"提示，而不是笼统的 500。
+		// 仓库返回 ErrNoImage（哨兵错误），对该设备同样返回"分类不存在"提示，
+		// 而不是笼统的 500。
 		// 外部 API 渠道：分类不在白名单中（ErrCategoryNotSupported）同样返回此提示页。
 		var categoryNotSupported *model.ErrCategoryNotSupported
+		var noImage *model.ErrNoImage
 		// 按与请求相同的规则解析默认分类（可能命中自定义默认分类），
 		// 确保"分类不存在"提示页显示的分类与实际使用的分类一致。
 		category := h.svc.ResolveDefaultCategory(params.Source, params.Category)
-		if errors.As(err, &categoryNotSupported) ||
-			!h.svc.CategoryExists(params.Source, category) ||
-			!h.svc.CategoryExistsFor(params.Source, category, deviceType) {
+		if errors.As(err, &categoryNotSupported) || errors.As(err, &noImage) {
 			// 仅 Debug 模式列出可用分类（避免向外部暴露图库分类清单）
 			var available []string
 			if config.C.Debug {
@@ -284,39 +298,67 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.stats.RecordSuccess()
-
+	// 成功计数按分支记录：mode=image 的代理/文件输出可能在中途失败，
+	// 失败时改记失败（此前在 switch 之前统一 RecordSuccess 会把失败计入成功）
 	switch params.Mode {
 	case model.ModeRedirect:
 		http.Redirect(w, r, img.URL, http.StatusFound)
+		h.stats.RecordSuccess()
 	case model.ModeJSON:
+		// 本地图源：url 字段返回相对图库根目录的路径（如 pc/default/a.jpg），
+		// 避免向外部泄露服务器绝对路径；mode=image 仍用绝对路径直接读文件
+		respImg := img
+		if params.Source == model.SourceLocal {
+			cp := *img
+			cp.URL = localRelativePath(h.rootPath, img.URL)
+			respImg = &cp
+		}
 		writeJSON(w, http.StatusOK, model.RandomResponse{
 			Code:    200,
 			Message: "success",
-			Data:    img,
+			Data:    respImg,
 		})
+		h.stats.RecordSuccess()
 	case model.ModeImage:
+		var ok bool
 		if params.Source == model.SourceLocal {
 			// 本地文件：直接读取并输出（无需 HTTP 代理）
-			h.serveLocalFile(w, r, img.URL)
+			ok = h.serveLocalFile(w, r, img.URL)
 		} else {
-			h.proxyImage(w, r, img.URL)
+			ok = h.proxyImage(w, r, img.URL)
+		}
+		if ok {
+			h.stats.RecordSuccess()
+		} else {
+			h.stats.RecordFail()
 		}
 	default:
 		http.Redirect(w, r, img.URL, http.StatusFound)
+		h.stats.RecordSuccess()
 	}
 }
 
+// localRelativePath 将本地图片绝对路径转换为相对项目根目录的路径
+// （mode=json 展示用，防止向外部泄露服务器目录结构；越界/转换失败时返回原值）。
+func localRelativePath(rootPath, p string) string {
+	if rel, err := filepath.Rel(rootPath, p); err == nil &&
+		rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(rel)
+	}
+	return p
+}
+
 // proxyImage 代理输出远程图片（mode=image）。
+// 返回是否成功输出（供调用方记录统计：中途失败计入失败）。
 //
 // 安全：仅允许 http/https、阻止内网 IP、校验 Content-Type、50MB 上限，
 // SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
-func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL string) {
+func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL string) bool {
 	// SSRF 防护：只允许 http/https
 	parsed, err := url.Parse(imageURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "invalid image URL"})
-		return
+		return false
 	}
 
 	// SSRF 防护：IP 字面量直接拒绝。域名解析与内网拦截由 netx 拨号层统一完成
@@ -325,39 +367,42 @@ func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL
 	if ip := net.ParseIP(parsed.Hostname()); ip != nil && netx.IsBlockedIP(ip) {
 		logger.L.Warn("ssrf blocked: private IP", "url", imageURL)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "invalid image URL"})
-		return
+		return false
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, imageURL, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "failed to create request"})
-		return
+		return false
 	}
 
 	resp, err := proxyClient.Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "failed to fetch image"})
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
-	// 仅允许图片类型，降低 XSS 风险（如 text/html）
+	// 仅允许图片类型，降低 XSS 风险（如 text/html）。
+	// MIME 类型按 RFC 大小写不敏感：用 ParseMediaType 解析后比较（上游返回
+	// "Image/Png" 时此前会被误拒 502），响应仍透传上游原始 Content-Type。
 	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+	mediaType, _, parseErr := mime.ParseMediaType(contentType)
+	if parseErr != nil || !strings.HasPrefix(strings.ToLower(mediaType), "image/") {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "upstream returned non-image content"})
-		return
+		return false
 	}
 
 	// 上游声明超限直接拒绝（CopyN 仍保留 50MB 硬上限兜底）
 	if resp.ContentLength > 50<<20 {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "upstream image too large (max 50MB)"})
-		return
+		return false
 	}
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	// SVG 可内嵌脚本：沙箱化，降低直接访问时脚本在 API 域名下执行的风险（XSS）
-	if strings.HasPrefix(contentType, "image/svg+xml") {
+	if strings.HasPrefix(strings.ToLower(mediaType), "image/svg+xml") {
 		w.Header().Set("Content-Security-Policy", "sandbox")
 	}
 
@@ -371,14 +416,16 @@ func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL
 		if conn, _, hijackErr := http.NewResponseController(w).Hijack(); hijackErr == nil {
 			conn.Close()
 		}
-		return
+		return false
 	}
+	return true
 }
 
 // serveLocalFile 直接输出本地文件（source=local + mode=image）。
+// 返回是否成功输出（供调用方记录统计）。
 // 安全：防路径穿越、拒绝符号链接、仅允许图片扩展名、50MB 上限，
 // SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
-func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, filePath string) {
+func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, filePath string) bool {
 	cleanPath := filepath.Clean(filePath)
 
 	// 安全检查 0：文件必须位于项目根目录内（防绝对路径越界）
@@ -386,7 +433,7 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		logger.L.Warn("local file outside project root blocked", "path", filePath)
 		writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
-		return
+		return false
 	}
 
 	// 安全检查 1：防路径穿越。按路径分隔符切分后逐段检查，
@@ -395,7 +442,7 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 		if seg == ".." {
 			logger.L.Warn("path traversal attempt blocked", "path", filePath)
 			writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
-			return
+			return false
 		}
 	}
 
@@ -403,7 +450,7 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 	ext := strings.ToLower(filepath.Ext(cleanPath))
 	if !model.ImageExts[ext] {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "unsupported local file type"})
-		return
+		return false
 	}
 
 	// 安全检查 3：拒绝符号链接（防止链接指向图库目录外的文件）。
@@ -412,7 +459,7 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 		if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			logger.L.Warn("symlink blocked", "path", dir)
 			writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
-			return
+			return false
 		}
 		if dir == h.rootPath {
 			break
@@ -426,21 +473,33 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 	if err != nil {
 		logger.L.Warn("local file open failed", "path", cleanPath, "error", err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "local file not found"})
-		return
+		return false
 	}
 	defer f.Close()
+
+	// 打开后复核（缩小 Lstat 检查与 Open 之间的 TOCTOU 竞态窗口）：
+	// 文件本身不能是符号链接、且必须是普通文件
+	if li, err := os.Lstat(cleanPath); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		logger.L.Warn("symlink blocked (post-open)", "path", cleanPath)
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
+		return false
+	}
+	if fi, err := f.Stat(); err == nil && !fi.Mode().IsRegular() {
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "message": "access denied"})
+		return false
+	}
 
 	// 超限文件直接拒绝（CopyN 仍保留 50MB 硬上限兜底）
 	if fi, err := f.Stat(); err == nil && fi.Size() > 50<<20 {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "local image too large (max 50MB)"})
-		return
+		return false
 	}
 
 	// 根据扩展名推断标准 Content-Type（如 .jpg → image/jpeg）
 	contentType := model.ImageMimeTypes[ext]
 	if contentType == "" {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "unsupported local file type"})
-		return
+		return false
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=300")
@@ -451,6 +510,7 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.CopyN(w, f, 50<<20)
+	return true
 }
 
 // renderSetupGuide 返回"开始使用"引导页。

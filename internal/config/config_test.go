@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +32,8 @@ func TestParseWhitelist(t *testing.T) {
 // 环境变量的优先级高于 .env 文件与默认值：开发机终端里若残留
 // APP_PORT 等导出变量（如冒烟测试时设置过），TestLoad 会在污染环境下失败。
 // 清空后测试结果与执行环境无关。
+// 匹配大小写不敏感（lookupEnvFold 会同时命中小写键，Linux 上 os.LookupEnv
+// 大小写敏感，因此必须遍历 os.Environ 清理所有大小写变体）。
 func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
@@ -42,9 +45,18 @@ func clearEnv(t *testing.T) {
 		"CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_TIMEOUT_SECONDS", "CIRCUIT_HALF_OPEN_MAX",
 		"LOG_LEVEL", "LOG_DIR", "LOG_MAX_AGE", "LOG_MAX_SIZE",
 	}
-	saved := make(map[string]string)
+	target := make(map[string]bool, len(keys))
 	for _, k := range keys {
-		if v, ok := os.LookupEnv(k); ok {
+		target[strings.ToLower(k)] = true
+	}
+
+	saved := make(map[string]string)
+	for _, kv := range os.Environ() {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if target[strings.ToLower(k)] {
 			saved[k] = v
 			os.Unsetenv(k)
 		}

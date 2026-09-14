@@ -1,7 +1,9 @@
 package netx
 
 import (
+	"context"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +34,17 @@ func TestIsBlockedIP(t *testing.T) {
 		// 拦截：IPv6 ULA（fc00::/7）
 		{"fc00::1", true},
 		{"fd12:3456::1", true},
+		// 拦截：保留/文档段（不可公网路由，防内网劫持利用）
+		{"192.0.2.1", true},     // TEST-NET-1
+		{"198.51.100.7", true},  // TEST-NET-2
+		{"203.0.113.9", true},   // TEST-NET-3
+		{"198.18.0.1", true},    // 基准测试段
+		{"192.0.0.1", true},     // 协议保留
+		{"192.88.99.1", true},   // 废弃 6to4 中继
+		{"240.0.0.1", true},     // 240.0.0.0/4 保留段
+		{"255.255.255.255", true},
+		{"2001:db8::1", true},   // IPv6 文档段
+		{"fec0::1", true},       // 废弃站点本地
 		// 放行：公网地址
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
@@ -47,5 +60,23 @@ func TestIsBlockedIP(t *testing.T) {
 		if got := IsBlockedIP(ip); got != c.want {
 			t.Errorf("IsBlockedIP(%s) = %v, want %v", c.ip, got, c.want)
 		}
+	}
+}
+
+// TestSafeDialContextRejectsLoopback 拨号层集成断言：内网目标在建立连接前被拒绝
+// （此前只有 IsBlockedIP 的单元测试，拨号链路本身无覆盖）。
+func TestSafeDialContextRejectsLoopback(t *testing.T) {
+	if _, err := SafeDialContext(context.Background(), "tcp", "127.0.0.1:80"); err == nil {
+		t.Fatal("SafeDialContext to 127.0.0.1 should be blocked")
+	} else if !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("err = %v, want blocked private address", err)
+	}
+}
+
+// TestSafeDialerRejectsLoopback 自定义拨号器（resolver 注入入口）同样拦截内网目标。
+func TestSafeDialerRejectsLoopback(t *testing.T) {
+	d := NewSafeDialer(nil)
+	if _, err := d.DialContext(context.Background(), "tcp", "10.0.0.1:80"); err == nil {
+		t.Fatal("DialContext to 10.0.0.1 should be blocked")
 	}
 }

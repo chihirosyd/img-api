@@ -19,7 +19,9 @@ services:
       # 右侧须与 .env 的 APP_PORT 一致；改左侧后记得同步反代 proxy_pass 与防火墙放行
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "/app/health-check", "-url", "http://localhost:8080"]
+      # 注意：若修改 .env 的 APP_PORT，需同步此处 -url 端口与 ports 映射右侧；
+      # -strict 让 degraded（部分图源不可用）也显示为 unhealthy，而非恒 healthy
+      test: ["CMD", "/app/health-check", "-strict", "-url", "http://localhost:8080"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -29,7 +29,11 @@ func main() {
 	fmt.Println("🔍 Scanning:", localDir)
 
 	// 与主服务自动索引共用的扫描逻辑（key: "pc/default", value: [filepaths]）
-	images := repository.ScanLocalImages(localDir)
+	images, err := repository.ScanLocalImages(localDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ scan failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// 原子写入 JSON 索引：先写临时文件再重命名（与主服务自动索引行为一致）
 	os.MkdirAll(filepath.Dir(indexFile), 0755)
