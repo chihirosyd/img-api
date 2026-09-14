@@ -124,8 +124,8 @@ func TestTxtRepositoryRedisCooldown(t *testing.T) {
 		t.Fatalf("first request should try redis once, calls = %d", fc.calls)
 	}
 
-	// 冷却期内：直走文件，不再询问 Redis
-	img, err = repo.Random(ctx, "anime", model.DevicePC)
+	// 冷却期内：直走文件，不再询问 Redis（此处只关心调用次数，不需要结果）
+	_, err = repo.Random(ctx, "anime", model.DevicePC)
 	if err != nil {
 		t.Fatal(err)
 	}
