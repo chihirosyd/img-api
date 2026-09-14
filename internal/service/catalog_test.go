@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"img-api/internal/model"
@@ -38,25 +39,34 @@ func TestTxtCategoriesForDevice(t *testing.T) {
 	}
 }
 
-// TestTxtCategoriesUppercaseIgnored 回归 Z12：分类文件名统一按小写约定处理，
-// 大写 .TXT 文件不被列入分类清单（与读取/同步行为一致，避免"列得出取不到"）。
+// TestTxtCategoriesUppercaseIgnored 回归 Z12：分类文件名统一按小写约定处理。
+// 仅在 Linux（大小写敏感文件系统）验证——Windows 上无法构造大小写并存场景。
 func TestTxtCategoriesUppercaseIgnored(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 文件系统大小写不敏感，无法构造大小写并存场景；由 Linux CI 覆盖")
+	}
 	root := t.TempDir()
 	pc := filepath.Join(root, "pc")
 	if err := os.MkdirAll(pc, 0755); err != nil {
 		t.Fatal(err)
 	}
+
+	// 仅大写文件：归一化后按小写名查找不到 → 不列入清单（与读取行为一致）
 	if err := os.WriteFile(filepath.Join(pc, "ANIME.TXT"), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if got := txtCategoriesForDevice(root, "pc"); len(got) != 0 {
+		t.Errorf("txtCategoriesForDevice = %v, want empty（仅大写文件不识别）", got)
+	}
+
+	// 大小写文件并存：归一化后是同一分类名 → 去重只列一次
 	if err := os.WriteFile(filepath.Join(pc, "anime.txt"), []byte("https://example.com/b.jpg\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-
 	got := txtCategoriesForDevice(root, "pc")
-	want := []string{"anime"} // 大写文件忽略；小写文件正常列出
+	want := []string{"anime"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("txtCategoriesForDevice = %v, want %v", got, want)
+		t.Errorf("txtCategoriesForDevice = %v, want %v（大小写并存去重）", got, want)
 	}
 }
 

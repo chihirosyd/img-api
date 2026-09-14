@@ -113,6 +113,7 @@ func txtCategoriesForDevice(root, device string) []string {
 		return nil
 	}
 	var result []string
+	seen := make(map[string]bool)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".txt") {
 			continue
@@ -120,7 +121,13 @@ func txtCategoriesForDevice(root, device string) []string {
 		// 分类文件名统一按小写处理：英文字母归一化为小写（避免 ANIME.TXT 与
 		// anime.txt 被视为不同分类）；中文无大小写，ToLower 原样保留
 		name := strings.TrimSuffix(strings.ToLower(e.Name()), ".txt")
+		// 去重：Linux 大小写敏感文件系统上 ANIME.TXT 与 anime.txt 可并存，
+		// 归一化后是同一分类名，只列一次
+		if seen[name] {
+			continue
+		}
 		if txtCategoryExistsForDevice(root, device, name) {
+			seen[name] = true
 			result = append(result, name)
 		}
 	}
