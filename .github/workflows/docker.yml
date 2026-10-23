@@ -14,11 +14,13 @@ on:
   workflow_dispatch: # 支持手动触发
 
 permissions:
-  contents: read
-  packages: write
+  contents: read # PR 验证只需要读权限；写权限（packages）只给 job 内部
 
 jobs:
   docker:
+    permissions:
+      contents: read
+      packages: write # 仅手动触发的推送需要
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +32,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        # PR 不登录：Dockerfile 来自 PR，构建阶段可读取已写入的凭据
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io

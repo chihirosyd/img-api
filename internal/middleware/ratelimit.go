@@ -42,6 +42,13 @@ func RateLimiter() (Middleware, func()) {
 
 			if !limiter.allow(ip) {
 				logger.L.Warn("rate limit exceeded", "ip", ip)
+				// 限流器在 CORS 外层：命中时 CORS 中间件根本不会执行，
+				// 必须在这里补齐跨域头与安全头，否则浏览器 fetch 只会报
+				// "CORS 错误"，读不到 429 与 Retry-After（前端无法优雅退避）。
+				if config.C.CorsEnabled {
+					setCORSHeaders(w)
+				}
+				addSecurityHeaders(w)
 				// Retry-After：告知客户端窗口长度，浏览器/爬虫可自动退避重试
 				w.Header().Set("Retry-After", "60")
 				writeJSON(w, http.StatusTooManyRequests, map[string]any{
@@ -159,27 +166,32 @@ func realClientIP(r *http.Request, trusted []*net.IPNet) string {
 	}
 
 	// 对端是否可信代理？
-	isTrusted := false
-	for _, cidr := range trusted {
-		if cidr.Contains(remoteIP) {
-			isTrusted = true
-			break
-		}
-	}
-	if !isTrusted {
+	if !isTrustedIP(remoteIP, trusted) {
 		return remoteIP.String() // 直连客户端：不信任任何转发头
 	}
 
-	// 可信代理来源：X-Forwarded-For 第一段为客户真实 IP。
-	// 首段必须是合法 IP：垃圾/伪造值回退对端 IP，防止攻击者轮换任意
-	// 字符串制造无限限流桶（限流器 map 膨胀）。
+	// 可信代理来源：从右向左找第一个"不可信"地址作为客户端 IP。
+	//
+	// 不能直接取最左段：反代若用 $proxy_add_x_forwarded_for（追加语义），
+	// 头会变成 "客户端自带XFF, 真实客户端IP"，最左段完全由攻击者控制——
+	// 每次换一个伪造 IP 就换一个限流桶，限流形同虚设，访问日志也会被写脏。
+	// 逐段向左跳过属于 TRUSTED_PROXIES 的地址，第一个不可信地址才是最接近
+	// 真实客户端、且无法被伪造的那一跳。
+	//
+	// 注意：若真实客户端本身就落在 TRUSTED_PROXIES 网段内（例如内网访客经
+	// 同一网关访问），它会被当作代理跳过，最终回退到网关 IP 共用一个桶。
+	// 这是"宁可误伤不可绕过"的取舍，网段应只覆盖网关本身。
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		// X-Forwarded-For 格式: "client, proxy1, proxy2"
-		first := fwd
-		if idx := strings.IndexByte(fwd, ','); idx > 0 {
-			first = fwd[:idx]
-		}
-		if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+		parts := strings.Split(fwd, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := net.ParseIP(strings.TrimSpace(parts[i]))
+			if ip == nil {
+				continue // 非 IP（垃圾/伪造值）：跳过，不据此建限流桶
+			}
+			if isTrustedIP(ip, trusted) {
+				continue // 可信代理自身，继续向左
+			}
 			return ip.String()
 		}
 	}
@@ -190,6 +202,16 @@ func realClientIP(r *http.Request, trusted []*net.IPNet) string {
 		}
 	}
 	return remoteIP.String()
+}
+
+// isTrustedIP 判断 IP 是否属于任一可信代理网段。
+func isTrustedIP(ip net.IP, trusted []*net.IPNet) bool {
+	for _, cidr := range trusted {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseRemoteAddr 从 "ip:port"（IPv6 为 "[ip]:port"）解析 IP。

@@ -107,9 +107,16 @@ func (s *RandomService) Random(ctx context.Context, source model.SourceType, api
 	// txt/local 支持通过配置自定义默认分类（external 的默认分类在池内按 API 解析）。
 	category = s.ResolveDefaultCategory(source, category)
 
+	// external 池未配置时先返回"未配置"哨兵（Handler 渲染引导页）。
+	// 否则多分类场景会被 pickExistingCategory 全部过滤成"分类不存在"（404），
+	// 与单分类路径的引导页语义不一致。
+	if source == model.SourceExternal && (s.externalPool == nil || len(s.externalPool.APIs()) == 0) {
+		return nil, model.ErrExternalNotConfigured
+	}
+
 	// 解析多分类：多分类时只从"实际可用"的分类中随机选（外部渠道按 API 池
-	// 白名单过滤），避免选到不存在的分类导致误报 500。
-	pickedCategory := s.pickExistingCategory(source, category, deviceType)
+	// 或指定 API 的白名单过滤），避免选到不存在的分类导致误报 500。
+	pickedCategory := s.pickExistingCategory(source, apiName, category, deviceType)
 	if pickedCategory == "" {
 		return nil, &model.ErrCategoryNotSupported{Source: string(source), Category: category}
 	}
@@ -251,6 +258,29 @@ func (s *RandomService) Close() {
 			stopper.Stop()
 		}
 	}
+}
+
+// RebuildLocalIndex 立即重建 local 图库索引（扫描磁盘并写回 local.json）。
+//
+// 供服务运行期按需触发（cmd/server 收到 SIGHUP 时调用），取代
+// "exec build-index + 重启服务"的两步运维流程。仅当 local 仓库已初始化时有效；
+// 未初始化时按需初始化后再重建（保证信号处理路径不依赖请求是否到过 local 渠道）。
+func (s *RandomService) RebuildLocalIndex() error {
+	repo := s.GetRepo(model.SourceLocal)
+	rebuilder, ok := repo.(interface{ RebuildIndex() error })
+	if !ok {
+		return fmt.Errorf("local repository does not support index rebuild")
+	}
+	err := rebuilder.RebuildIndex()
+	if err == nil {
+		// 分类清单快照可能与新索引不一致（新增/删除分类），立即失效，
+		// 让下一次分类判定与提示页重新扫描，而不是等 30s 自然过期。
+		s.mu.Lock()
+		s.catAt = time.Time{}
+		s.catCache = categorySnapshot{}
+		s.mu.Unlock()
+	}
+	return err
 }
 
 // SourceEmpty 判断指定图源是否未配置内容（按渠道分别检测）。
@@ -528,12 +558,16 @@ func (s *RandomService) ResolveDefaultCategory(source model.SourceType, raw stri
 
 // pickExistingCategory 从逗号分隔的类别中随机选一个"实际可用"的分类。
 //
-// 多分类场景下先过滤掉当前设备目录下不存在的分类（外部渠道按 API 池分类
-// 白名单过滤）再随机，避免选到不可用的分类导致仓库报错、Handler 误判为 500。
+// 多分类场景下先过滤掉当前设备目录下不存在的分类（外部渠道按 API 白名单过滤）
+// 再随机，避免选到不可用的分类导致仓库报错、Handler 误判为 500。
 // 单分类场景不做存在性校验（保持零开销），由仓库/Handler 处理结果。
 //
+// apiName 非空时（external 指定了某个 API），按**该 API** 的分类白名单过滤，
+// 而不是整个池——否则 A 支持 cat、B 支持 dog 时，api_name=A&category=cat,dog
+// 可能抽到 dog，明明 cat 可用却报 404。
+//
 // 全部不可用时返回 ""，调用方据此返回"分类不存在"错误。
-func (s *RandomService) pickExistingCategory(source model.SourceType, raw string, deviceType model.DeviceType) string {
+func (s *RandomService) pickExistingCategory(source model.SourceType, apiName, raw string, deviceType model.DeviceType) string {
 	categories := splitCategories(raw)
 	if len(categories) == 1 {
 		return categories[0] // 单分类直接返回，存在性交给后续处理
@@ -543,8 +577,15 @@ func (s *RandomService) pickExistingCategory(source model.SourceType, raw string
 	var existing []string
 	for _, c := range categories {
 		if source == model.SourceExternal {
-			// 外部渠道：按 API 池的分类白名单过滤
-			if s.externalPool != nil && s.externalPool.SupportsCategory(c) {
+			// 外部渠道：按 API（或整池）的分类白名单过滤
+			if s.externalPool == nil {
+				continue
+			}
+			ok := s.externalPool.SupportsCategory(c)
+			if apiName != "" {
+				ok = s.externalPool.APISupportsCategory(apiName, c)
+			}
+			if ok {
 				existing = append(existing, c)
 			}
 			continue

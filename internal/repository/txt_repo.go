@@ -87,13 +87,17 @@ func (r *TxtRepository) Random(ctx context.Context, category string, deviceType 
 	if r.cache != nil && r.shouldTryRedis() {
 		redisKey := fmt.Sprintf("img:%s:%s", deviceDir, category)
 		url, err := r.cache.SRandMember(ctx, redisKey)
-		if err == nil && url != "" {
+		if err == nil && url != "" && IsValidImageURL(url) {
 			logger.L.Debug("txt redis hit", "key", redisKey, "url", url)
 			return &model.Image{URL: url, Category: category}, nil
 		}
 		if err != nil && !errors.Is(err, cache.Nil) {
-			// Redis 真实故障（Nil=键不存在，属正常）：进入冷却并限频告警
-			r.noteRedisFailure(err)
+			// 客户端取消/超时不是 Redis 故障：否则一次刷新/断网就会让全站
+			// 绕过 Redis 30 秒，并打出一条"Redis unavailable"的假告警。
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				// Redis 真实故障（Nil=键不存在，属正常）：进入冷却并限频告警
+				r.noteRedisFailure(err)
+			}
 		}
 	}
 
@@ -130,10 +134,47 @@ func (r *TxtRepository) Random(ctx context.Context, category string, deviceType 
 	}, nil
 }
 
-// Health 检查 TXT 根目录是否存在（简单 os.Stat 验证）。
+// Health 检查 TXT 图库是否真的可用。
+//
+// 判定口径与 LocalRepository.Health 一致：
+//   - 根目录不存在 → 视为"尚未配置 TXT 图库"（非故障），是否计入 /health 由
+//     service.SourceEmpty 决定；
+//   - 根目录存在 → pc/pe 两个设备目录必须存在、是目录、且可读。
+//
+// 不能只 os.Stat 根目录：该目录由部署骨架保证存在，恒返回"健康"会让 /health
+// 在 pc/pe 子目录缺失（取不到任何图）时报 ok。
 func (r *TxtRepository) Health(ctx context.Context) error {
-	_, err := os.Stat(r.rootPath)
-	return err
+	if _, err := os.Stat(r.rootPath); err != nil {
+		if os.IsNotExist(err) {
+			// 根目录不存在 = 还没有任何 TXT 图库，与 Random 的语义一致（非故障）
+			return nil
+		}
+		return err
+	}
+	for _, device := range []string{"pc", "pe"} {
+		if err := checkDeviceDir(filepath.Join(r.rootPath, device), device); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkDeviceDir 校验设备目录（pc/pe）确实是可读目录。
+//
+// 只 os.Stat 不够：路径是普通文件、目录没有读权限（挂载掉线、权限被改）时
+// Stat 仍然成功，而 Random 会失败——健康检查便成了"报健康但取不到图"。
+func checkDeviceDir(dir, device string) error {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("设备目录缺失: %s", device)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("设备目录不是目录: %s", device)
+	}
+	if _, err := os.ReadDir(dir); err != nil {
+		return fmt.Errorf("设备目录不可读: %s: %w", device, err)
+	}
+	return nil
 }
 
 // ReadTxtLines 读取 TXT 文件并过滤空行、# 注释行与非法 URL 行，

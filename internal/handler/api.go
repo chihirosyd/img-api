@@ -33,6 +33,12 @@ import (
 	"img-api/internal/service"
 )
 
+// maxProxyImageMB 是代理输出与本地文件的大小上限（MB）。
+const maxProxyImageMB = 50
+
+// maxProxyImageBytes 以变量形式暴露上限，便于测试调小后验证超限中止路径。
+var maxProxyImageBytes int64 = maxProxyImageMB << 20
+
 // proxyClient 用于 mode=image 的 HTTP 客户端。
 // 安全：拨号前校验 IP（防 DNS rebinding）+ 10s 超时 + 连接池复用。
 var proxyClient = netx.NewClient(10 * time.Second)
@@ -57,9 +63,11 @@ func NewAPIHandler(rootPath string, svc *service.RandomService, stats *service.S
 //
 // 这样根路径既是"首页"又能直接嵌图，两不误。
 func (h *APIHandler) Home(w http.ResponseWriter, r *http.Request) {
-	// Go 1.22 mux 中 "GET /" 是兜底模式，会匹配任意路径；仅根路径返回首页
+	// Go 1.22 mux 中 "GET /" 是兜底模式，会匹配任意路径；仅根路径返回首页。
+	// 未知路径返回 JSON 404，与其它接口的错误契约一致（此前是 text/plain
+	// "404 page not found"，按 JSON 解析的客户端会直接失败）。
 	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": 404, "message": "not found"})
 		return
 	}
 
@@ -383,6 +391,17 @@ func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL
 	}
 	defer resp.Body.Close()
 
+	// 非 2xx 一律视为取图失败。只校验 Content-Type 的话，上游 404/429/5xx
+	// 返回的"图片占位图"会被当 200 转发：客户端拿到错误图，统计还记成功。
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		logger.L.Warn("upstream image fetch failed", "url", imageURL, "status", resp.StatusCode)
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"code":    502,
+			"message": fmt.Sprintf("upstream returned status %d", resp.StatusCode),
+		})
+		return false
+	}
+
 	// 仅允许图片类型，降低 XSS 风险（如 text/html）。
 	// MIME 类型按 RFC 大小写不敏感：用 ParseMediaType 解析后比较（上游返回
 	// "Image/Png" 时此前会被误拒 502），响应仍透传上游原始 Content-Type。
@@ -393,8 +412,8 @@ func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL
 		return false
 	}
 
-	// 上游声明超限直接拒绝（CopyN 仍保留 50MB 硬上限兜底）
-	if resp.ContentLength > 50<<20 {
+	// 上游声明超限直接拒绝（流式读取仍有 50MB 硬上限兜底）
+	if resp.ContentLength > maxProxyImageBytes {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "upstream image too large (max 50MB)"})
 		return false
 	}
@@ -407,15 +426,24 @@ func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL
 	}
 
 	w.WriteHeader(http.StatusOK)
-	// 限制最大 50MB，防 OOM。多读 1 字节探测超限：上游图超过 50MB 时直接断开连接，
+	// 限制最大 50MB，防 OOM。用 LimitedReader 而不是 CopyN：LimitedReader 只实现
+	// Read，io.Copy 仍会走接收方（w）的 ReadFrom 快速路径；CopyN 内部包了
+	// LimitedReader + 计数，同样不阻断 ReadFrom，但无法区分"读满上限"与"源已结束"，
+	// 这里读 50MB+1 字节探测超限：读满即说明上游图超限，直接断开连接，
 	// 避免客户端把截断的半张图误当作完整图片（Content-Length 声明超限已在前面拒绝）。
-	written, _ := io.CopyN(w, resp.Body, 50<<20+1)
-	if written > 50<<20 {
-		logger.L.Warn("upstream image exceeded 50MB limit, closing connection", "url", imageURL)
-		// NewResponseController 会透传中间件包装（statusRecorder.Unwrap），直达底层 Hijacker
-		if conn, _, hijackErr := http.NewResponseController(w).Hijack(); hijackErr == nil {
-			conn.Close()
-		}
+	lr := &io.LimitedReader{R: resp.Body, N: maxProxyImageBytes + 1}
+	written, copyErr := io.Copy(w, lr)
+	if written > maxProxyImageBytes {
+		// 已写出 50MB 响应体、状态码无法再改：用 net/http 约定的 ErrAbortHandler
+		// 中止连接（服务端会静默关闭，客户端拿到"不完整"而不是"完整的坏图"）。
+		// 此前尝试 Hijack，但 HTTP/2 或非 Hijacker writer 上会失败并正常收尾，
+		// 客户端因此把截断图当成完整图片。
+		logger.L.Warn("upstream image exceeded 50MB limit, aborting response", "url", imageURL)
+		panic(http.ErrAbortHandler)
+	}
+	if copyErr != nil {
+		// 上游 RST / 连接中断：已写出的部分撤不回，但不能再记成功。
+		logger.L.Warn("proxy image copy interrupted", "url", imageURL, "error", copyErr)
 		return false
 	}
 	return true
@@ -423,8 +451,9 @@ func (h *APIHandler) proxyImage(w http.ResponseWriter, r *http.Request, imageURL
 
 // serveLocalFile 直接输出本地文件（source=local + mode=image）。
 // 返回是否成功输出（供调用方记录统计）。
-// 安全：防路径穿越、拒绝符号链接、仅允许图片扩展名、50MB 上限，
-// SVG 响应附加 CSP sandbox，降低脚本在 API 域名下执行的风险。
+// 安全：防路径穿越、拒绝符号链接、仅允许图片扩展名、默认 50MB 上限
+// （maxProxyImageBytes，测试可调小），SVG 响应附加 CSP sandbox，降低脚本在
+// API 域名下执行的风险。
 func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, filePath string) bool {
 	cleanPath := filepath.Clean(filePath)
 
@@ -449,7 +478,7 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 	// 安全检查 2：仅允许图片扩展名
 	ext := strings.ToLower(filepath.Ext(cleanPath))
 	if !model.ImageExts[ext] {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "unsupported local file type"})
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"code": 415, "message": "unsupported local file type"})
 		return false
 	}
 
@@ -472,7 +501,7 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 	f, err := os.Open(cleanPath)
 	if err != nil {
 		logger.L.Warn("local file open failed", "path", cleanPath, "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "local file not found"})
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": 404, "message": "local file not found"})
 		return false
 	}
 	defer f.Close()
@@ -489,16 +518,16 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 		return false
 	}
 
-	// 超限文件直接拒绝（CopyN 仍保留 50MB 硬上限兜底）
-	if fi, err := f.Stat(); err == nil && fi.Size() > 50<<20 {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "local image too large (max 50MB)"})
+	// 超限文件直接拒绝（流式读取仍有 50MB 硬上限兜底）
+	if fi, err := f.Stat(); err == nil && fi.Size() > maxProxyImageBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"code": 413, "message": "local image too large (max 50MB)"})
 		return false
 	}
 
 	// 根据扩展名推断标准 Content-Type（如 .jpg → image/jpeg）
 	contentType := model.ImageMimeTypes[ext]
 	if contentType == "" {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 502, "message": "unsupported local file type"})
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"code": 415, "message": "unsupported local file type"})
 		return false
 	}
 	w.Header().Set("Content-Type", contentType)
@@ -509,7 +538,15 @@ func (h *APIHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, file
 	}
 
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.CopyN(w, f, 50<<20)
+	// 用 io.Copy（而非 CopyN）：f 是 *os.File，标准库的 http.response 实现了
+	// io.ReaderFrom，可经中间件包装（ReadFrom 透传）走到 net.TCPConn 的 sendfile
+	// 零拷贝路径。文件大小已在上方用 f.Stat() 校验（>50MB 已拒绝），
+	// 因此这里无需再截断。
+	if _, err := io.Copy(w, f); err != nil {
+		// 读盘错误或客户端提前断开：已写出的部分撤不回，但不能再记成功。
+		logger.L.Warn("local file copy interrupted", "path", cleanPath, "error", err)
+		return false
+	}
 	return true
 }
 

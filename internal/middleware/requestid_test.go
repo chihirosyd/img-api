@@ -45,6 +45,30 @@ func TestRequestID(t *testing.T) {
 		t.Fatalf("truncated rune length = %d, want 64", n)
 	}
 
+	// 回归 R5-02：字节超限但字符数不足 64（22 个中文 = 66 字节 / 22 rune）。
+	// 此前 len() 按字节判断、runes[:64] 按字符切片，这里会越界 panic。
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	narrow := strings.Repeat("中", 22)
+	req.Header.Set("X-Request-ID", narrow)
+	wrapped.ServeHTTP(w, req)
+	if got := w.Header().Get("X-Request-ID"); got != narrow {
+		t.Fatalf("byte-over-rune-under id = %q, want %q（不该截断，更不该 panic）", got, narrow)
+	}
+
+	// 4 字节字符（emoji）截断后仍必须是合法 UTF-8 且正好 64 个字符
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Request-ID", strings.Repeat("😀", 70))
+	wrapped.ServeHTTP(w, req)
+	got = w.Header().Get("X-Request-ID")
+	if !utf8.ValidString(got) {
+		t.Fatalf("emoji id is not valid utf-8: %q", got)
+	}
+	if n := len([]rune(got)); n != 64 {
+		t.Fatalf("emoji truncated rune length = %d, want 64", n)
+	}
+
 	// 含控制字符的客户端 ID → 重新生成（防御性清洗：该值会回写响应头）
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/", nil)

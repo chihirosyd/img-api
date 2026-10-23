@@ -143,11 +143,11 @@ func TestServeLocalFile(t *testing.T) {
 		t.Fatalf("escape status = %d, want 403", w.Code)
 	}
 
-	// 非图片扩展名 → 502
+	// 非图片扩展名 → 415（本地图源，不是网关错误，不用 502）
 	w, r = newTestContext("")
 	h.serveLocalFile(w, r, filepath.Join(root, "note.txt"))
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("non-image status = %d, want 502", w.Code)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("non-image status = %d, want 415", w.Code)
 	}
 }
 

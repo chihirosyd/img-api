@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"io"
 	"net/http"
 	"runtime/debug"
 
@@ -70,3 +71,20 @@ func (rw *recoveryWriter) Write(b []byte) (int, error) {
 }
 
 func (rw *recoveryWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
+
+// ReadFrom 透传 io.ReaderFrom 快速路径（sendfile / 底层缓冲直接落盘）。
+//
+// 与 statusRecorder 同理：中间件链上任一层包装缺少该方法，handler 的
+// io.Copy(w, &io.LimitedReader{...}) 就会退化为 32KB 用户态缓冲反复 Write。
+func (rw *recoveryWriter) ReadFrom(src io.Reader) (int64, error) {
+	if !rw.wroteHeader {
+		// ReadFrom 不经过 Write/WriteHeader：先标记已提交（隐式 200），
+		// 否则 panic 恢复时会把 500 追加到已写出的响应体之后。
+		rw.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	// 底层不支持：断开设递归（用只含 Writer 的视图，避免再次匹配到本方法）
+	return io.Copy(struct{ io.Writer }{rw}, src)
+}

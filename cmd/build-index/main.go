@@ -1,7 +1,8 @@
 // build-index — 手动重建本地图片 JSON 索引。
 //
 // 扫描 resources/local/ 目录，将所有图片文件路径写入 storage/index/local.json。
-// 与主服务自动索引共用同一扫描函数（repository.ScanLocalImages），结果保持一致。
+// 扫描与写盘均复用主服务的实现（repository.ScanLocalImages / repository.WriteLocalIndex），
+// 结果与主服务自动生成的索引完全一致（原子写入 + 落盘 + 重命名）。
 //
 // ⚠️ 通常无需手动运行：主服务启动时会自动生成/加载索引（见 LocalRepository），
 // 并可配置 LOCAL_INDEX_REFRESH 计划表自动刷新（duration/@ 描述符/cron）。此命令用于：
@@ -12,7 +13,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,31 +35,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 原子写入 JSON 索引：先写临时文件再重命名（与主服务自动索引行为一致）
-	os.MkdirAll(filepath.Dir(indexFile), 0755)
-	tmp := indexFile + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ create index file: %v\n", err)
-		os.Exit(1)
-	}
-
-	encoder := json.NewEncoder(f)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(images); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		fmt.Fprintf(os.Stderr, "❌ encode json: %v\n", err)
-		os.Exit(1)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		fmt.Fprintf(os.Stderr, "❌ close index file: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.Rename(tmp, indexFile); err != nil {
-		os.Remove(tmp)
-		fmt.Fprintf(os.Stderr, "❌ rename index file: %v\n", err)
+	// 与主服务自动索引共用的原子写入（随机临时文件 + Sync + Rename）
+	if err := repository.WriteLocalIndex(indexFile, images); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ write index failed: %v\n", err)
 		os.Exit(1)
 	}
 

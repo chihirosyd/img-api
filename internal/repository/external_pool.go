@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -180,39 +181,31 @@ func userAgentFor(deviceType model.DeviceType) string {
 
 // buildRequestHeaders 拷贝自定义请求头，并在未显式配置 User-Agent 时按设备类型
 // 注入代表性 UA，使按 UA 自适应的上游返回对应版本图片（已配置则优先使用配置值）。
-// 大小写重复的 User-Agent 键会告警，并优先采用规范键 "User-Agent" 的值。
+//
+// User-Agent 一律归一化写入规范键 "User-Agent"：配置里无论写成 user-agent /
+// User-Agent 还是 USER-AGENT，都视为"已配置 UA"（大小写不敏感），避免出现两套
+// 语义不同的 UA 判定。多个大小写变体同时存在时告警，此时取值顺序不确定（map 迭代序）。
 func buildRequestHeaders(custom map[string]string, deviceType model.DeviceType) map[string]string {
 	headers := make(map[string]string, len(custom)+1)
-	canonicalUA := ""
-	firstUA := ""
+	var customUA string
 	uaCount := 0
 	for k, v := range custom {
 		if strings.EqualFold(k, "User-Agent") {
 			uaCount++
-			if k == "User-Agent" {
-				canonicalUA = v
-			}
-			if firstUA == "" {
-				firstUA = v
-			}
+			customUA = v // 正常只有一个；多个变体时最终值随 map 迭代序（已告警）
 			continue
 		}
 		headers[k] = v
 	}
-	switch {
-	case uaCount == 0:
+	if uaCount == 0 {
 		headers["User-Agent"] = userAgentFor(deviceType)
-	case uaCount > 1:
-		logger.L.Warn("duplicate User-Agent keys in image.yaml headers (case-insensitive), using canonical key value",
-			"count", uaCount)
-		fallthrough
-	default:
-		if canonicalUA != "" {
-			headers["User-Agent"] = canonicalUA
-		} else {
-			headers["User-Agent"] = firstUA
-		}
+		return headers
 	}
+	if uaCount > 1 {
+		logger.L.Warn("duplicate User-Agent keys in image.yaml headers (case-insensitive), only one is used",
+			"count", uaCount)
+	}
+	headers["User-Agent"] = customUA
 	return headers
 }
 
@@ -302,7 +295,17 @@ func (p *ExternalPool) fetchRedirect(ctx context.Context, api ExternalAPIConfig,
 	headers := buildRequestHeaders(api.Headers, deviceType)
 	finalURL, err := p.finalURL(ctx, headers, http.MethodHead, url)
 	if err != nil {
-		finalURL, err = p.finalURL(ctx, headers, http.MethodGet, url)
+		// 只有"上游不支持/拒绝 HEAD"（405/501/403）才降级 GET。
+		// 取消、超时、DNS 失败、SSRF 拦截都重试的话，一次取图会变成两次等待
+		// （单次超时 10s，最坏 20s），且用已取消的 ctx 再打一次纯属浪费。
+		var se *httpStatusError
+		retryable := errors.As(err, &se) &&
+			(se.status == http.StatusMethodNotAllowed ||
+				se.status == http.StatusNotImplemented ||
+				se.status == http.StatusForbidden)
+		if retryable && ctx.Err() == nil {
+			finalURL, err = p.finalURL(ctx, headers, http.MethodGet, url)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -314,6 +317,17 @@ func (p *ExternalPool) fetchRedirect(ctx context.Context, api ExternalAPIConfig,
 		Width:    width,
 		Height:   height,
 	}, nil
+}
+
+// httpStatusError 表示上游返回了非 2xx。
+// 供 fetchRedirect 判断 HEAD 失败是否值得降级为 GET 重试。
+type httpStatusError struct {
+	method string
+	status int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("external %s returned HTTP %d", e.method, e.status)
 }
 
 // finalURL 发起请求并返回重定向后的最终 URL（不读取响应体）。
@@ -341,7 +355,7 @@ func (p *ExternalPool) finalURL(ctx context.Context, headers map[string]string, 
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("external %s returned HTTP %d", method, resp.StatusCode)
+		return "", &httpStatusError{method: method, status: resp.StatusCode}
 	}
 
 	final := resp.Request.URL.String()

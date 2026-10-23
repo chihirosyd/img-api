@@ -29,6 +29,9 @@ docs/
 # 本地编译产物与 Go 开发工具输出（避免进入构建上下文）
 /img-api
 /img-api.exe
+# GUI 控制面板二进制（约 33MB；仅 Windows 发布包需要，不进构建上下文）
+/img-api-gui
+/img-api-gui.exe
 /server
 /server.exe
 /health-check
@@ -37,9 +40,15 @@ docs/
 /build-index.exe
 /sync-redis
 /sync-redis.exe
+/setversion
+/setversion.exe
 *.out
 *.test
 *.prof
+
+# 本地构建缓存（GOCACHE / GOTMPDIR 指到工作区时产生）
+/.gocache/
+/.gotmp/
 
 # 私人维护文档（审查报告/路线图）不进镜像构建上下文
 private/

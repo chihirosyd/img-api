@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"img-api/internal/app"
+	"img-api/internal/logger"
 )
 
 func main() {
@@ -51,6 +52,23 @@ func main() {
 	// ── 第 4 步：等待退出信号并优雅关闭 ──
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// ── SIGHUP：按需重建 local 图库索引（免 exec / 免重启）──
+	// 用法：docker kill -s HUP <container>（容器内 PID 1 即本进程）或 kill -HUP <pid>
+	// 取代原来的"exec build-index + 重启服务"两步流程。
+	// 注：Windows 不支持 SIGHUP，注册不会报错但永不触发；
+	// 该平台的等价操作是重启服务，或运行 build-index.exe。
+	reload := make(chan os.Signal, 1)
+	signal.Notify(reload, syscall.SIGHUP)
+	go func() {
+		for range reload {
+			logger.L.Info("SIGHUP received, rebuilding local image index")
+			if err := srv.RebuildLocalIndex(); err != nil {
+				logger.L.Error("local index rebuild failed", "error", err)
+			}
+		}
+	}()
+
 	<-quit
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

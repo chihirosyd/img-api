@@ -7,10 +7,10 @@ on:
   pull_request:
     branches: [main, master]
 
-# 创建 Release 需要写权限：GitHub 新仓库默认工作流权限为只读，
-# 缺少本声明会导致 action-gh-release 上传时 403
+# 工作流级权限只读：check / gui-check 会检出并运行 PR 代码，绝不能拿到写权限。
+# 真正需要写权限的 job（release / publish / docker）在各自 job 内单独声明。
 permissions:
-  contents: write
+  contents: read
 
 # 同一 ref 的并发运行串行执行：main push 与 gosum 自动提交触发的多轮 check 不互相覆盖
 concurrency:
@@ -84,11 +84,16 @@ jobs:
           cache: true
 
       - name: Build GUI
+        # 显式开启 CGO：fyne 需要 C 编译器，缺 gcc 时给出明确的 "gcc not found"，
+        # 而不是让 CGO 默认关闭后报一堆 fyne 内部错误
+        env:
+          CGO_ENABLED: 1
         run: go build -o img-api-gui.exe ./cmd/gui/
 
   # ── 构建 5 平台二进制并打包 zip（只构建，不创建 Release）──
   release:
-    needs: check
+    # gui-check 也必须是前置：Windows GUI 编译失败时不应继续发布产物
+    needs: [check, gui-check]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     strategy:
@@ -168,6 +173,8 @@ jobs:
   # 同时创建同一 tag 的 Release 会触发 GitHub API 422 竞态（Release 缺 zip / 整轮变红）。
   publish:
     needs: release
+    permissions:
+      contents: write # 创建 Release 并上传产物
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

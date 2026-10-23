@@ -217,7 +217,7 @@ https://example.com/photo2.jpg</code></pre>
   <pre><code>resources/local/pc/default/
   ├── photo1.jpg
   └── photo2.png</code></pre>
-  <p>新增分类（新目录）即时生效；已有分类中增删图片需重建索引并重启加载。</p>
+  <p>新增分类（新目录）即时生效；已有分类中增删图片需重建索引：重启服务，或向进程发 SIGHUP（Linux/容器，免重启）。</p>
 
   <h2>方式三：外部 API 池</h2>
   <p>编辑 <code>config/image.yaml</code>，在 <code>external_apis</code> 下添加 API 端点：</p>

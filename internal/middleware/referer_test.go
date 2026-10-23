@@ -64,3 +64,48 @@ func TestRefererExemptsHomeAndHealth(t *testing.T) {
 		}
 	}
 }
+
+// TestRefererProtectsImageBranchOfHome 回归 R5-08："/" 在浏览器 <img> 嵌入
+// （Accept 以 image/ 开头）或带 mode 参数时会直接出图，这类请求不能因为
+// 路径是 "/" 就豁免防盗链——否则盗链方把 /random 换成 / 即可绕过白名单。
+func TestRefererProtectsImageBranchOfHome(t *testing.T) {
+	old := config.C
+	config.C = &config.AppConfig{RefererWhitelist: []string{"mysite.com"}}
+	defer func() { config.C = old }()
+
+	mw := Referer()
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	cases := []struct {
+		name    string
+		path    string
+		accept  string
+		referer string
+		want    int
+	}{
+		// 首页（浏览器导航）：Accept 以 text/html 开头 → 仍豁免
+		{"homepage with foreign referer", "/", "text/html,application/xhtml+xml", "https://evil.com/", http.StatusNoContent},
+		// <img> 嵌入根路径：Accept 以 image/ 开头 → 必须走白名单
+		{"img embed of root", "/", "image/avif,image/webp,*/*", "https://evil.com/", http.StatusForbidden},
+		// 带 mode 参数的根路径 → 出图，必须走白名单
+		{"root with mode=image", "/?mode=image", "", "https://evil.com/", http.StatusForbidden},
+		// 白名单内的站点嵌入根路径 → 放行
+		{"img embed from whitelisted site", "/", "image/png", "https://mysite.com/page", http.StatusNoContent},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", c.path, nil)
+			if c.accept != "" {
+				r.Header.Set("Accept", c.accept)
+			}
+			r.Header.Set("Referer", c.referer)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != c.want {
+				t.Errorf("status = %d, want %d", w.Code, c.want)
+			}
+		})
+	}
+}

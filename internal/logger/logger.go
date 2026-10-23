@@ -8,6 +8,7 @@
 package logger
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -18,6 +19,7 @@ import (
 )
 
 // L 是全局日志实例，Init() 后即可使用。
+// 未调用 Init 时为 nil，调用方不应直接使用（app.NewServer 保证先 Init 再写日志）。
 var L *slog.Logger
 
 // logDir 和配置缓存（供后台 goroutine 使用）。
@@ -25,6 +27,14 @@ var (
 	logDirCache string
 	maxAgeDays  int
 	maxSizeMB   int
+)
+
+// 后台清理协程的存活状态：Init 时启动，Close 时停止。
+var (
+	workerMu   sync.Mutex
+	workerStop chan struct{} // 当前清理协程的停止信号（nil = 未启动）
+	workerDone chan struct{} // 当前清理协程的退出信号
+	activeFile *fileWriter   // 当前文件写入器（Close 时关闭，释放文件句柄）
 )
 
 // fileWriter 将日志写入"今天"的日志文件，支持运行期轮转：
@@ -38,15 +48,18 @@ type fileWriter struct {
 	file     *os.File
 	path     string
 	fallback bool // 打开文件失败时降级为 stderr，不再轮转
+	closed   bool // Close 之后不再写入（write 原样返回，避免向已关闭文件写）
 }
 
 // newFileWriter 创建文件写入器并打开今日日志文件。
-// 打开失败时回退到 stderr（与旧行为一致，不阻塞服务启动）。
+// 打开失败时回退到 stderr（不阻塞服务启动），但会明确告知一次——
+// 静默回退在 GUI 场景等于日志全丢且无人知晓。
 func newFileWriter(dir string) *fileWriter {
 	w := &fileWriter{dir: dir}
 	if err := w.open(); err != nil {
 		w.file = os.Stderr
 		w.fallback = true
+		fmt.Fprintf(os.Stderr, "⚠️  无法写入日志文件（目录 %q），已回退到 stderr：%v\n", dir, err)
 	}
 	return w
 }
@@ -55,17 +68,41 @@ func newFileWriter(dir string) *fileWriter {
 func (w *fileWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// Close 之后仍可能有并发的写日志调用：原样返回，不写已关闭的文件
+	if w.closed {
+		return len(p), nil
+	}
 	if err := w.rotateIfNeededLocked(); err != nil {
 		return 0, err
 	}
 	return w.file.Write(p)
 }
 
+// Close 关闭当前日志文件并标记为已关闭（幂等）。
+// 供进程优雅退出与测试使用：Windows 下未关闭的文件句柄会让后续删除失败。
+func (w *fileWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	if w.file == nil || w.fallback {
+		return nil // stderr 不归我们关；文件未打开时无需关闭
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
 // rotateIfNeeded 对外供后台协程调用（自动加锁）。
 func (w *fileWriter) rotateIfNeeded() {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 	_ = w.rotateIfNeededLocked()
-	w.mu.Unlock()
 }
 
 // rotateIfNeededLocked 检查并执行轮转（调用方必须持有 w.mu）。
@@ -150,15 +187,33 @@ func Init(level, logDir string, maxAge, sizeMB int) error {
 	// 文件写入器：运行期支持跨天切换与大小切分
 	fw := newFileWriter(logDir)
 
+	// 若此前已启动过清理协程（进程内重复 Init），先停掉它与其文件句柄，
+	// 避免 goroutine 与文件句柄泄漏。
+	stopWorker()
+
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	workerMu.Lock()
+	workerStop = stopCh
+	workerDone = doneCh
+	activeFile = fw
+	workerMu.Unlock()
+
 	// 启动时执行一次清理，之后每 5 分钟：清理过期日志 + 检查轮转
 	go func() {
+		defer close(doneCh)
 		cleanupLogs()
 		fw.rotateIfNeeded()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			cleanupLogs()
-			fw.rotateIfNeeded()
+		for {
+			select {
+			case <-ticker.C:
+				cleanupLogs()
+				fw.rotateIfNeeded()
+			case <-stopCh:
+				return
+			}
 		}
 	}()
 
@@ -173,6 +228,35 @@ func Init(level, logDir string, maxAge, sizeMB int) error {
 	L = slog.New(handler)
 	slog.SetDefault(L)
 	return nil
+}
+
+// Close 停止后台清理协程并关闭日志文件（幂等）。
+//
+// 用途：进程优雅退出，以及需要删除日志文件的测试——Windows 下未关闭的文件句柄
+// 会让删除失败。关闭后 L 仍可写（写入被丢弃），不会 panic。
+func Close() {
+	stopWorker()
+	workerMu.Lock()
+	fw := activeFile
+	activeFile = nil
+	workerMu.Unlock()
+	if fw != nil {
+		_ = fw.Close()
+	}
+}
+
+// stopWorker 停止当前后台清理协程并等待其退出（幂等；未启动时为空操作）。
+func stopWorker() {
+	workerMu.Lock()
+	stopCh, doneCh := workerStop, workerDone
+	workerStop, workerDone = nil, nil
+	if stopCh != nil {
+		close(stopCh)
+	}
+	workerMu.Unlock()
+	if doneCh != nil {
+		<-doneCh
+	}
 }
 
 // cleanupLogs 清理过期日志 + 大小超限的当日日志。

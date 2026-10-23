@@ -19,7 +19,7 @@ import (
 type Stats struct {
 	totalRequests atomic.Int64 // 自启动以来接收到的总请求数
 	totalSuccess  atomic.Int64 // 成功返回图片的次数
-	totalFail     atomic.Int64 // 失败的次数（含 4xx + 5xx）
+	totalFail     atomic.Int64 // 未成功返回图片的次数（含引导页、参数错误、限流等，不按 HTTP 状态码区分）
 	circuitTrips  atomic.Int64 // 熔断器拦截的次数
 	startTime     time.Time    // 服务启动时间（用于计算 uptime）
 

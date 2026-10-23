@@ -29,9 +29,18 @@ func Referer() Middleware {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 首页与健康检查不参与防盗链：防盗链只保护图片接口，
-			// 外链访问首页/探针不应被 403 拦截
-			if r.URL.Path == "/" || r.URL.Path == "/health" {
+			// 健康检查不参与防盗链（Docker 探针 / 监控）。
+			if r.URL.Path == "/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// "/" 有两种语义：浏览器地址栏访问返回首页（应豁免），而
+			// <img> 嵌入（Accept 以 image/ 开头）或带 mode 参数时会直接出图。
+			// 出图分支必须照常走白名单，否则盗链方把 /random 换成 / 即可绕过。
+			// Accept 判定与 handler.acceptsImage 保持同一口径（前缀匹配，
+			// 不用 Contains——浏览器导航的 Accept 也含 image/webp）。
+			if r.URL.Path == "/" && r.URL.Query().Get("mode") == "" &&
+				!strings.HasPrefix(strings.TrimSpace(r.Header.Get("Accept")), "image/") {
 				next.ServeHTTP(w, r)
 				return
 			}

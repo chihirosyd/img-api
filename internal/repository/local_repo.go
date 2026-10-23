@@ -48,6 +48,10 @@ type LocalRepository struct {
 	// 目录一出现（新增分类）立即恢复扫描，保持"新增分类即时可用"的承诺。
 	negMu sync.Mutex
 	negAt map[string]time.Time
+
+	// refreshMu 串行化索引重建：cron 定时刷新与 SIGHUP 手动重建可能并发，
+	// 交错执行会出现"内存=A、磁盘=B"的不一致（重启后加载到另一份索引）。
+	refreshMu sync.Mutex
 }
 
 // negCacheTTL 是负缓存的有效时长。
@@ -194,10 +198,30 @@ func (r *LocalRepository) clearNegative(key string) {
 	delete(r.negAt, key)
 }
 
-// Health 检查本地图片根目录是否存在。
+// Health 检查本地图库是否真的可用。
+//
+// 判定口径：
+//   - 根目录不存在 → 视为"尚未配置本地图库"（非故障）；是否参与 /health 的最终
+//     判定由 service.SourceEmpty 决定（没有内容的图源本就是信息性状态）。
+//   - 根目录存在 → pc/pe 两个设备目录必须存在、是目录、且可读；缺失或不可读
+//     返回 error（此时确实取不出图，必须让 /health 看出来）。
+//
+// 注意：不能只 os.Stat 根目录——resources/local 由仓库骨架 / entrypoint 保证存在，
+// 那样检查会恒返回"健康"，即使 pc/pe 子目录缺失、一张图都取不出来也报健康。
 func (r *LocalRepository) Health(ctx context.Context) error {
-	_, err := os.Stat(r.rootPath)
-	return err
+	if _, err := os.Stat(r.rootPath); err != nil {
+		if os.IsNotExist(err) {
+			// 根目录不存在 = 还没有任何本地图片，与 Random 的语义一致（非故障）
+			return nil
+		}
+		return err
+	}
+	for _, device := range []string{"pc", "pe"} {
+		if err := checkDeviceDir(filepath.Join(r.rootPath, device), device); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ──────────────────────────────────────────────
@@ -271,10 +295,23 @@ func ScanLocalImages(rootPath string) (map[string][]string, error) {
 	return images, firstErr
 }
 
+// RebuildIndex 立即重建索引（扫描磁盘 + 原子写回 local.json + 更新内存索引）。
+//
+// 供服务运行期按需触发（如收到 SIGHUP）：取代"exec build-index 再重启服务"
+// 的两步运维流程。扫描失败时保留旧索引并返回错误（不会用空索引覆盖磁盘上的有效索引）。
+func (r *LocalRepository) RebuildIndex() error {
+	logger.L.Info("local index rebuild requested")
+	return r.refreshIndex()
+}
+
 // refreshIndex 扫描整个 local 目录，更新内存索引并写回 local.json。
 // 扫描出错时保留旧索引（内存+磁盘），返回错误；目录不存在时生成空索引
 // （不报错），使首次启动也能正常创建文件。
 func (r *LocalRepository) refreshIndex() error {
+	// 串行化：cron 刷新与 SIGHUP 重建并发时，避免"内存=A、磁盘=B"的错配
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+
 	images, scanErr := ScanLocalImages(r.rootPath)
 	if scanErr != nil {
 		// 扫描失败（目录瞬时不可读等）：保留旧索引，不覆盖磁盘上有效的 local.json
@@ -288,7 +325,7 @@ func (r *LocalRepository) refreshIndex() error {
 	r.mu.Unlock()
 
 	// 写回索引文件（失败仅告警，不影响内存索引生效）
-	if err := r.writeIndex(images); err != nil {
+	if err := WriteLocalIndex(r.indexFile, images); err != nil {
 		logger.L.Warn("write local index failed", "error", err)
 		return err
 	}
@@ -297,11 +334,13 @@ func (r *LocalRepository) refreshIndex() error {
 	return nil
 }
 
-// writeIndex 将索引序列化写入 local.json（与 build-index 命令输出格式一致，可互换使用）。
+// WriteLocalIndex 将分类索引原子写入指定文件（JSON，键按字典序），
+// 供主服务（refreshIndex）与 build-index 命令共用，保证两处行为一致。
+//
 // 原子写入：同目录随机临时文件 + Sync 落盘 + 重命名——避免固定 .tmp 并发冲突
 // 与掉电导致索引损坏。
-func (r *LocalRepository) writeIndex(images map[string][]string) error {
-	dir := filepath.Dir(r.indexFile)
+func WriteLocalIndex(indexFile string, images map[string][]string) error {
+	dir := filepath.Dir(indexFile)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
@@ -315,7 +354,14 @@ func (r *LocalRepository) writeIndex(images map[string][]string) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name()) // Rename 成功后此清理为 no-op
+	tmpName := tmp.Name()
+	// 先注册清理，再按需取消：任何提前返回都不残留临时文件
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
@@ -328,7 +374,16 @@ func (r *LocalRepository) writeIndex(images map[string][]string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), r.indexFile)
+	// CreateTemp 建的是 0600：Rename 会带走这个权限，导致另一用户运行的
+	// build-index 或备份脚本读不到索引。索引不含敏感信息，显式放宽到 0644。
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, indexFile); err != nil {
+		return err
+	}
+	removeTmp = false
+	return nil
 }
 
 // startRefreshScheduler 启动 cron 调度器，按计划表刷新索引。

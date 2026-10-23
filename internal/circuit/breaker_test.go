@@ -203,3 +203,34 @@ func TestBreakerCanceledNotCounted(t *testing.T) {
 		t.Fatalf("state=%s trips=%d, want OPEN + trips 1", b.State(), b.Trips())
 	}
 }
+
+// TestBreakerHalfOpenSlotReleasedOnCancel 回归 R5-03：半开探测遇到客户端取消/超时
+// 必须归还探测槽位。此前只 return 不归还，halfTries 涨到 halfOpenMax 后状态永久
+// 停在 HALF_OPEN，external 图源只能重启恢复。
+func TestBreakerHalfOpenSlotReleasedOnCancel(t *testing.T) {
+	b := NewBreaker(1, 0, 1) // timeout=0：断路后立即半开；halfOpenMax=1
+	if err := b.Call(func() error { return errors.New("boom") }); err == nil {
+		t.Fatal("expected failure")
+	}
+	if b.State() != StateOpen {
+		t.Fatalf("state = %s, want OPEN", b.State())
+	}
+
+	// 半开探测：占用唯一槽位后返回取消错误（模拟客户端断开）
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.Call(func() error { return ctx.Err() }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if b.State() != StateHalfOpen {
+		t.Fatalf("state = %s, want HALF_OPEN（取消不应改变状态）", b.State())
+	}
+
+	// 槽位已归还：下一次探测必须被放行，并能恢复 CLOSED
+	if err := b.Call(func() error { return nil }); err != nil {
+		t.Fatalf("probe after cancel rejected: %v（槽位未归还 → 永久半开）", err)
+	}
+	if b.State() != StateClosed {
+		t.Fatalf("state = %s, want CLOSED after successful probe", b.State())
+	}
+}

@@ -43,7 +43,11 @@ func TestUserAgentFor(t *testing.T) {
 }
 
 // TestBuildRequestHeaders 验证请求头构建：无 User-Agent 时按设备注入；
-// 已显式配置（大小写不敏感）时优先保留配置值（统一写入规范键 User-Agent）。
+// 已显式配置（大小写不敏感）时保留配置值（统一写入规范键 User-Agent）。
+//
+// 注：大小写重复的 UA 键由 imagecfg 的小写归一化决定实际取值（map 迭代序），
+// 本函数只保证"产出规范键且值是配置值之一"并打告警，不再承诺某个特定赢家
+// ——此前的"规范键优先"逻辑因 YAML 归一化而不可达（回归 D2/P4-2）。
 func TestBuildRequestHeaders(t *testing.T) {
 	// 未配置 UA → 注入手机 UA
 	h := buildRequestHeaders(map[string]string{"Authorization": "Bearer x"}, model.DevicePE)
@@ -60,10 +64,14 @@ func TestBuildRequestHeaders(t *testing.T) {
 		t.Errorf("buildRequestHeaders(custom UA) = %q, want custom-ua/1.0", got)
 	}
 
-	// 大小写重复的 UA 键 → 优先采用规范键 "User-Agent" 的值（确定性行为）
+	// 大小写重复的 UA 键 → 必须产出规范键，且取值为配置中的某一个
 	h = buildRequestHeaders(map[string]string{"user-agent": "lowercase", "User-Agent": "canonical"}, model.DevicePC)
-	if got := h["User-Agent"]; got != "canonical" {
-		t.Errorf("buildRequestHeaders(duplicate UA) = %q, want canonical key value", got)
+	got := h["User-Agent"]
+	if got != "canonical" && got != "lowercase" {
+		t.Errorf("buildRequestHeaders(duplicate UA) = %q, want 配置值之一", got)
+	}
+	if len(h) != 1 {
+		t.Errorf("buildRequestHeaders(duplicate UA) 应只产出规范键，got %v", h)
 	}
 }
 

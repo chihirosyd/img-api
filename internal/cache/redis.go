@@ -82,6 +82,14 @@ func (r *RedisCache) SAdd(ctx context.Context, key string, members ...string) er
 	return r.client.SAdd(ctx, key, anys...).Err()
 }
 
+// Rename 原子重命名键（sync-redis 用它实现"临时 key 写满再整体替换"）。
+//
+// 不用「先 Delete 再 SAdd」：SAdd 失败时旧集合已经没了，
+// 一次网络抖动就会让线上分类短暂消失。
+func (r *RedisCache) Rename(ctx context.Context, oldKey, newKey string) error {
+	return r.client.Rename(ctx, oldKey, newKey).Err()
+}
+
 // SRandMember 从 Redis Set 中 O(1) 随机获取一个成员。
 func (r *RedisCache) SRandMember(ctx context.Context, key string) (string, error) {
 	val, err := r.client.SRandMember(ctx, key).Result()

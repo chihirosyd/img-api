@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && cgo
 
 // brandTheme 为 GUI 提供与网页首页一致的品牌配色（品牌蓝 #2f81f7），
 // 在 Fyne 内置亮色/暗色主题基础上覆盖主色、链接色、焦点色与选区色。

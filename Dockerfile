@@ -43,7 +43,10 @@ COPY --from=builder /build/health-check .
 
 # 复制运行时文件 + 入口脚本
 COPY docker/entrypoint.sh /app/
-COPY .env.example /app/.env
+# 配置模板副本：.env.example 是面向"反代部署"的推荐值（限流/跨域交给网关，默认 false），
+# 与代码内置默认值（true）不同，因此不直接当作运行时 /app/.env——
+# 由 entrypoint 在 config/.env 缺失时复制过去，仅作为首次启动的种子配置。
+COPY .env.example /app/.env.default
 COPY config/ ./config/
 # 内置示例副本：compose 挂载 ./config 会覆盖镜像目录，entrypoint 用它兜底生成 image.yaml
 COPY config/ /app/config.default/
@@ -51,6 +54,8 @@ COPY config/ /app/config.default/
 COPY resources/ /app/resources.default/
 COPY resources/ ./resources/
 COPY storage/ ./storage/
+# MIT 要求在分发的副本中保留版权与许可声明：镜像同样是一种分发形式
+COPY LICENSE /app/LICENSE
 
 # 入口脚本以 root 运行（自动建目录 + chown），内部再降权到 appuser
 RUN chmod +x /app/entrypoint.sh && \

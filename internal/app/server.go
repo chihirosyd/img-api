@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,10 +38,20 @@ type Server struct {
 	running atomic.Bool
 }
 
-// loggerOnce 保证日志系统只初始化一次：
-// GUI 保存设置后重启服务会重复调用 NewServer，重复 Init 会不断新建
-// 文件写入器与后台清理协程（goroutine 与文件句柄泄漏）。
-var loggerOnce sync.Once
+// 日志系统的进程内初始化状态。
+//
+// 日志只初始化一次：GUI 保存设置后重启服务会重复调用 NewServer，
+// 重复 Init 会不断新建文件写入器与后台清理协程（goroutine 与文件句柄泄漏），
+// 因此用 loggerInitDir 记住"已为哪个根目录初始化过"。
+//
+// 失败必须可重试：此前用 sync.Once + 局部 logErr，首次 Init 失败后 Once 已被消费，
+// 第二次调用既跳过 Init 又因 logErr 恒为 nil 而略过错误分支，最终在
+// logger.L.Info 处空指针 panic——GUI「启动」按钮点两次即崩。
+// 现改为包级错误 + 目录双条件：任一未满足就重试 Init，失败始终如实返回 error。
+var (
+	loggerInitDir string // 已成功初始化的根目录（空 = 尚未成功初始化）
+	loggerInitErr error  // 上一次 Init 的错误；每次 NewServer 都会重试（成功后置 nil）
+)
 
 // NewServer 加载配置、初始化日志/缓存/路由，返回待启动的服务实例。
 // rootPath 为项目根目录（配置与图库所在地）。
@@ -52,16 +61,45 @@ func NewServer(rootPath string) (*Server, error) {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
-	// ── 初始化日志（进程内仅一次）──
-	var logErr error
-	loggerOnce.Do(func() {
-		logErr = logger.Init(config.C.LogLevel, filepath.Join(rootPath, config.C.LogDir),
-			config.C.LogMaxAge, config.C.LogMaxSize)
-	})
-	if logErr != nil {
-		return nil, fmt.Errorf("init logger: %w", logErr)
+	// LOG_DIR 为绝对路径时直接使用：filepath.Join 不会因第二个参数是绝对路径而重置，
+	// 否则 Docker 里 /var/log/img-api 会变成 /app/var/log/img-api（写进镜像层），
+	// Windows 上 D:\logs 会被拼成非法路径导致启动失败。
+	logDir := config.C.LogDir
+	if !filepath.IsAbs(logDir) {
+		logDir = filepath.Join(rootPath, logDir)
 	}
-	logger.L.Info("starting "+config.C.Name, "version", config.C.Version, "port", config.C.Port)
+
+	// ── 初始化日志（进程内仅一次；失败可重试，且必定返回错误而非 panic）──
+	if loggerInitDir != rootPath {
+		loggerInitErr = nil
+		if err := logger.Init(config.C.LogLevel, logDir,
+			config.C.LogMaxAge, config.C.LogMaxSize); err != nil {
+			loggerInitErr = fmt.Errorf("init logger: %w", err)
+		} else {
+			loggerInitDir = rootPath
+		}
+	}
+	if loggerInitErr != nil {
+		return nil, loggerInitErr
+	}
+	// root 字段便于一眼确认"服务实际用的是哪个根目录"——根目录探测错误
+	// （APP_ROOT / 可执行文件目录 / cwd 三种来源）是发布版最容易踩的坑，
+	// 没有这个字段时只能从后续日志间接推断。
+	logger.L.Info("starting "+config.C.Name,
+		"version", config.C.Version, "port", config.C.Port, "root", rootPath,
+		"log_dir", logDir)
+
+	// 配置侧遗留问题（image.yaml 读取/解析失败）：Load 阶段日志系统还没就绪，
+	// 只能写 stderr——GUI 没有控制台，等于用户完全看不到。这里补记到日志文件，
+	// 否则表现为"配了 image.yaml 却不生效"且毫无线索。
+	for _, w := range config.ImageWarnings {
+		logger.L.Error("config/image.yaml problem (整份配置未生效，source=external 将不可用)", "error", w)
+	}
+	// .env / 环境变量侧的告警同理（解析失败、非法数值、空值覆盖等）：
+	// 以前只写 stderr，GUI 用户永远看不到。
+	for _, w := range config.Warnings {
+		logger.L.Warn("config problem", "detail", w)
+	}
 
 	// ── 初始化缓存（Redis → 内存降级）──
 	var c cache.Cache
@@ -160,7 +198,6 @@ func (s *Server) Start() error {
 			logger.L.Error("server error", "error", err)
 		}
 	}()
-
 	s.running.Store(true)
 	return nil
 }
@@ -171,19 +208,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	logger.L.Info("shutting down server...")
-	// 先停后台任务（限流清理协程、仓库 cron 调度器），再停 HTTP 与缓存
+	// 顺序：先停 HTTP（等在途请求结束），再停后台任务与缓存。
+	// 反过来的话，正在处理的请求会用到已关闭的缓存/调度器而报错。
+	// 且无论 HTTP 是否超时，后台资源都必须关掉（否则缓存连接、协程泄漏）。
+	shutdownErr := s.httpSrv.Shutdown(ctx)
 	if s.limiterStop != nil {
 		s.limiterStop()
 	}
 	if s.svc != nil {
 		s.svc.Close()
 	}
-	if err := s.httpSrv.Shutdown(ctx); err != nil {
-		logger.L.Error("server forced to shutdown", "error", err)
-		return err
-	}
 	if s.cacheCloser != nil {
 		_ = s.cacheCloser.Close()
+	}
+	if shutdownErr != nil {
+		logger.L.Error("server forced to shutdown", "error", shutdownErr)
+		return shutdownErr
 	}
 	logger.L.Info("server exited")
 	return nil
@@ -192,11 +232,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Running 返回服务是否正在监听。
 func (s *Server) Running() bool { return s.running.Load() }
 
+// RebuildLocalIndex 立即重建 local 图库索引（扫描磁盘并写回 local.json）。
+//
+// 供运行期按需触发（cmd/server 收到 SIGHUP 时调用），取代
+// "exec build-index + 重启服务"的两步运维流程；不影响正在进行的请求。
+func (s *Server) RebuildLocalIndex() error {
+	if s.svc == nil {
+		return fmt.Errorf("service not initialized")
+	}
+	return s.svc.RebuildLocalIndex()
+}
+
 // Port 返回当前配置的监听端口。
 func (s *Server) Port() int { return config.C.Port }
-
-// HomeURL 返回教程首页地址（含运行状态仪表盘）。
-func (s *Server) HomeURL() string { return fmt.Sprintf("http://localhost:%d/", config.C.Port) }
 
 // OpenHome 打开默认浏览器访问教程首页。静默失败：打不开浏览器不影响服务运行。
 func OpenHome(port int) {

@@ -1,5 +1,21 @@
 # 部署指南
 
+| 章节 | 内容 |
+|---|---|
+| [二进制部署](#二进制部署) | 单文件部署、开机自启、目录结构 |
+| [Docker 部署](#docker-部署) | compose、手动 `docker run`、配置来源 |
+| [Nginx 反向代理](#nginx-反向代理) | 反代、限流、防盗链示例 |
+| [更新升级](#更新升级) | 版本升级与回滚 |
+| [GitHub Actions](#github-actions) | 发布流程与 CI |
+| [性能参考](#性能参考) | 压测数据与资源占用 |
+| [常见现象排查](#常见现象排查) | 现象 → 原因 → 处理 |
+
+> 🧭 **按场景阅读**：
+> - **第一次部署** → 看[二进制部署](#二进制部署)或 [Docker 部署](#docker-部署)，再配 [Nginx 反向代理](#nginx-反向代理)；
+> - **服务已在跑，要升级/回滚** → 直接看[更新升级](#更新升级)；
+> - **遇到问题** → 先看文末[常见现象排查](#常见现象排查)；
+> - **维护者发布新版** → 看 [GitHub Actions](#github-actions)。
+
 ## 二进制部署
 
 ### Linux / macOS
@@ -39,9 +55,10 @@ pkill img-api              # 停止服务
 
 > ⚠️ 启动后编辑 `resources/txt/pc/default.txt` 添加图片 URL（一行一个，即时生效）。
 > 如需外部 API，编辑 `config/image.yaml`（重启生效）。
-> 本地图片放入新分类目录即时生效；放入已有分类（如 `default/`）需重建索引并重启加载：
-> 运行 `./build-index`（源码 `go run ./cmd/build-index/`）后重启服务，
-> 或删除 `storage/index/local.json` 后重启自动重建。
+> 本地图片放入新分类目录即时生效；放入已有分类（如 `default/`）需重建索引并让服务加载：
+> 运行 `./build-index`（源码 `go run ./cmd/build-index/`）后**重启**，或**发 `SIGHUP` 免重启**
+> （`kill -HUP <pid>`；容器：`docker compose kill -s HUP img-api`），也可删除
+> `storage/index/local.json` 后重启自动重建。
 >
 > 💡 如果图源还没有图片，访问 `/random` 会返回友好的"开始使用"引导页而非报错。
 
@@ -231,27 +248,40 @@ docker compose exec img-api /app/sync-redis
 docker build -t img-api .
 # 左侧 8080 可换成宿主机实际端口；右侧为容器内部端口，须与 .env 的 APP_PORT 一致
 docker run -d -p 8080:8080 \
-  -v $(pwd)/.env:/app/.env \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/resources/txt:/app/resources/txt \
   --name img-api img-api
 ```
 
+> ⚠️ 不要再单独挂 `-v $(pwd)/.env:/app/.env`：entrypoint 启动时会把 `config/.env`
+> 覆盖到 `/app/.env`，单独挂载的宿主机文件会被替换（配置看似改了、实际不生效）。
+> 配置一律放 `config/.env`。
 > ⚠️ `resources/txt` 挂载**不能加 `:ro`**：容器首次启动需在其中创建 `pc/`、`pe/`
 > 骨架与示例 `default.txt`（只读挂载会导致 entrypoint 失败、容器反复重启）。
 > 如需加固，可先在宿主机建好 `resources/txt/pc`、`resources/txt/pe` 骨架后再改回只读。
+
+> 📌 关于配置来源：挂载 `./config` 时，容器首次启动会用镜像内置的模板
+> `/app/.env.default` 生成 `config/.env`（之后不再覆盖），因此宿主机侧目录为空也不会
+> 启动失败。注意该模板的 `CORS_ENABLED` / `RATE_LIMIT_ENABLED` 是 `false`
+> （面向有网关的部署）——直接暴露端口时请改为 `true`，详见 [CONFIG.md](CONFIG.md)。
 
 ---
 
 ## Nginx 反向代理
 
 ```nginx
+# limit_req_zone 只能写在 http 上下文（不能放进 server {}），否则 nginx -t 会报
+# "directive is not allowed here"。把它放到 nginx.conf 的 http {} 里：
+http {
+    limit_req_zone $binary_remote_addr zone=img:10m rate=60r/m;
+    # ... 其余 http 级配置（include 等）
+}
+
 server {
     listen 80;
     server_name img.yourdomain.com;
 
-    # 限流（可选）
-    limit_req_zone $binary_remote_addr zone=img:10m rate=60r/m;
+    # 限流（可选，zone 已在 http 块定义）
     limit_req zone=img burst=10 nodelay;
 
     # 防盗链（可选）
@@ -264,7 +294,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         # 覆盖客户端伪造的 XFF（不要用 $proxy_add_x_forwarded_for 透传：
-        # 应用信任 XFF 第一段，透传会让伪造值生效，限流/日志 IP 可被伪造）
+        # 应用从右向左跳过 TRUSTED_PROXIES 后取第一个不可信地址，
+        # 透传虽不能绕过限流，但会把伪造 IP 留在链里污染日志）
         proxy_set_header X-Forwarded-For $remote_addr;
     }
 }
@@ -277,7 +308,7 @@ Nginx 处理时建议关闭 Go 内置的对应功能（`<img>` 标签嵌图不�
 CORS_ENABLED=false
 RATE_LIMIT_ENABLED=false
 REFERER_WHITELIST=
-TRUSTED_PROXIES=172.17.0.0/16（示例，请按照实际填写）   # 可选但推荐：填写后应用自带日志能按真实访客 IP 记录（Nginx 日志不受影响）
+TRUSTED_PROXIES=172.17.0.0/16   # 可选但推荐：填写后应用自带日志能按真实访客 IP 记录（Nginx 日志不受影响）
 ```
 
 > 💡 若想保留 Go 内置限流（`RATE_LIMIT_ENABLED=true`），则必须配置
@@ -381,11 +412,10 @@ go vet ./...
 go get -u ./... && go mod tidy
 ```
 
-> 💡 Windows 本地跑 `go vet ./...` / `go test -race ./...` 需要启用 CGO：
-> 原因是 GUI 依赖 fyne 的 GL 驱动（go-gl），CGO 关闭时会报
-> `build constraints exclude all Go files`。
-> 处理：先设置 `$env:CGO_ENABLED="1"`（PowerShell）或 `set CGO_ENABLED=1`（CMD），
-> 并确保已安装 C 编译器（如 MSYS2 的 mingw-w64 gcc）且路径可达，再执行。
+> 💡 Windows 上 `go vet ./...` / `go test ./...` **不需要 CGO**：`cmd/gui` 的构建标记是
+> `//go:build windows && cgo`，CGO 关闭时会自动跳过 GUI。
+> 只有**编译 GUI 本身**（`go build ./cmd/gui`）才需要 `CGO_ENABLED=1` 且已安装 C 编译器
+> （如 MSYS2 的 mingw-w64 gcc）；发布流程与 CI 的 `gui-check` 都已显式开启 CGO。
 > CI 在 Linux 上无此问题：`cmd/gui` 带 `//go:build windows` 标记，Linux 下不参与编译。
 
 ### 发布步骤
@@ -397,6 +427,8 @@ go get -u ./... && go mod tidy
 go run ./cmd/setversion
 # 3. 提交（依赖已在发布前升级）
 git add -A && git commit -m "release vX.Y.Z"
+# 3.5 核对行为变更注记：docs/ 里「🕒 自 v… 起」必须与实际版本号一致（当前标的是 v1.6.0）
+git grep -n "🕒"
 # 4. 先推 main：Update go.sum 工作流会兜底检查 go.mod/go.sum（通常空跑无新提交）
 git push origin main
 # 5. 等 Update go.sum 跑完后拉取，再打 tag 触发发布
@@ -439,3 +471,23 @@ zip 内容：
 | 外部 API（受远端限制） | ~500 | ~8MB |
 
 > 参考值：Go 1.26，Intel i7-12700H，wrk 4 线程 100 连接（实际性能因环境而异）
+
+---
+
+## 常见现象排查
+
+> 先看"现象"，再看这一列；每条都给了下一步该查什么。
+> 状态码本身的含义见 [API 参考 → 常见状态码速查](API.md#常见状态码速查)。
+
+| 现象 | 最可能原因 | 处理 |
+|---|---|---|
+| 容器一直 `unhealthy` | `/health` 返回 `degraded`：某个**已配置**的图源取不到图 | `curl localhost:8080/health` 看 `checks` 里哪项不是 `healthy` |
+| `checks.local` = `unhealthy: 设备目录缺失: pe` | 只有 `pc` 没有 `pe`，或挂载没生效 | 补齐 `resources/local/pe/`（`txt` 同理）；检查 compose `volumes` |
+| 请求图片返回 `404` | 分类名/设备目录不对，或索引仍指向已删除的文件 | 确认 `resources/local/{pc,pe}/{category}/` 有图；发 `SIGHUP` 重建索引 |
+| 日志反复出现 `config problem` | `.env` 里有非法数字/布尔值、未知的 `image.yaml` 键，或 `.env` 解析失败 | 按日志里的变量名修正；值含 `$`/`#` 用单引号（见 CONFIG.md「取值规则」）。注意：**空值不会告警**（空环境变量按"未设置"处理） |
+| 日志出现 `config/image.yaml problem` | YAML 缩进/未知键写错，或 `default_category` 写成了标量 | 按报错修正；`default_category` 必须是列表 `[scenery]` |
+| 启动失败 `listen tcp :8080: bind: address already in use` | 端口被其他实例/程序占用 | 换 `APP_PORT`，并同步 compose `ports` 右侧与 healthcheck 的 `-url` |
+| `429 Too Many Requests` 突然变多 | 内置限流阈值偏小；或未配 `TRUSTED_PROXIES`，所有访客共用网关 IP 一个桶 | 配 `TRUSTED_PROXIES`，或关闭内置限流交给网关 `limit_req` |
+| `502` 反复出现 | 外部图床不可用、返回非图片内容、或图片超过 50MB | 查日志 `upstream image fetch failed` 的 `status`；换 API 或调小图 |
+| Docker 里放不进图片（`Permission denied`） | `resources/` 是 Docker 以 root 创建的 | `sudo chown -R $(id -u):$(id -g) resources/`（详见 [二进制部署](#二进制部署) 的目录说明） |
+| 改了 `.env` 但不生效 | 没有重启服务 | `docker compose restart`；只有 TXT/图片内容类改动不需要重启（见 CONFIG.md「变更生效时机」） |

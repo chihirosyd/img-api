@@ -1,5 +1,13 @@
 # API 参考文档
 
+| 章节 | 内容 |
+|---|---|
+| [三步上手](#三步上手从-0-到第一张图) | 最简用法、可用参数、返回值 |
+| [获取随机图片](#获取随机图片) | 全部 query 参数与各模式差异 |
+| [健康检查](#健康检查) | `/health` 字段与 `ok` / `degraded` 判定 |
+| [路由一览](#路由一览) | 全部路径与方法 |
+| [常见状态码速查](#常见状态码速查) | 状态码 → 原因 → 处理 |
+
 ## 三步上手：从 0 到第一张图
 
 > 第一次使用这个服务？先看这一节。熟悉之后可直接跳到 [请求参数](#请求参数)。
@@ -111,7 +119,7 @@ GET /random?source=external
 | 值 | 说明 | 配置方式 |
 |------|------|---------|
 | `txt` | TXT 图库（推荐） | 新建 `resources/txt/{pc\|pe}/{分类名}.txt`（文件名中的**英文字母请使用小写**，如 `anime.txt`；中文分类名如 `风景.txt` 直接使用即可）即时生效；向已有分类增删 URL 即时生效 |
-| `local` | 本地图片文件 | 新建 `resources/local/{pc\|pe}/{分类名}/` 文件夹并放入图片，即时生效；已有分类中增删图片需重建索引并重启加载（详见 [CONFIG.md](CONFIG.md)） |
+| `local` | 本地图片文件 | 新建 `resources/local/{pc\|pe}/{分类名}/` 文件夹并放入图片，即时生效；已有分类中增删图片需重建索引并让服务加载（重启或发 `SIGHUP`，详见 [CONFIG.md](CONFIG.md)） |
 | `external` | 外部 API 池 | 编辑 `config/image.yaml` 配置多个外部 API，再用 `api` 参数指定用哪个 |
 
 > ⚠️ `source=external` 只是选择“外部 API 池”这个图源。池里具体用哪个 API 由 `api` 参数决定，不传则随机。
@@ -126,10 +134,11 @@ GET /random?source=external
 
 > ⚠️ `source=local` 不支持 302 跳转（图源返回的是文件系统路径）：请求 `mode=redirect`
 >（含默认值）时**自动降级为 `mode=image`**——服务端直接输出图片，无需显式传参；
-> 需要元数据时使用 `mode=json`（其中 `url` 是服务器本地路径，仅供调试）。
+> 需要元数据时使用 `mode=json`。
 
-> 📌 `source=local&mode=json` 返回的 `url` 是**相对图库根目录（resources/local）的路径**
-> （如 `pc/default/photo.jpg`），不暴露服务器目录结构，仅供调试参考，不是可公开访问的 URL。
+> 📌 `source=local&mode=json` 返回的 `url` 是**相对项目根目录的路径**
+> （如 `resources/local/pc/default/photo.jpg`，原为服务器绝对路径），不暴露
+> 服务器绝对路径，仅供调试参考，不是可公开访问的 URL。
 
 #### api — 指定使用哪个外部 API
 
@@ -224,7 +233,7 @@ Cache-Control: public, max-age=300
 ```json
 {
   "code": 400,
-  "message": "local source does not support mode=redirect, use mode=image or mode=json"
+  "message": "invalid category: must not contain path separators or '..'"
 }
 ```
 
@@ -253,7 +262,7 @@ Cache-Control: public, max-age=300
 {
   "code": 404,
   "message": "category not found: anime",
-  "available": ["default", "scenery"]
+  "available": ["default", "scenery"]   // 仅 APP_DEBUG=true 时返回
 }
 ```
 
@@ -261,11 +270,11 @@ Cache-Control: public, max-age=300
 {
   "code": 404,
   "message": "external api not found: flickr",
-  "available": ["picsum", "unsplash"]
+  "available": ["picsum", "unsplash"]   // 仅 APP_DEBUG=true 时返回
 }
 ```
 
-> 📌 `available` 字段仅在 `APP_DEBUG=true` 时返回，生产环境不暴露分类清单。
+> 📌 `available` 字段仅在 `APP_DEBUG=true` 时返回，生产环境不暴露分类清单（上面的两个示例为 Debug 模式下的响应）。
 
 > 💡 **友好提示页**：请求的图源未配置任何内容时，返回 HTTP 503 的"开始使用"引导页（HTML），
 > 介绍三种添加图片的方式。图源有内容但请求的分类不存在时，返回 HTTP 404 的"分类不存在"
@@ -310,18 +319,37 @@ GET /health
 }
 ```
 
-### 状态码
+### `status` 字段
+
+> 这里说的是响应体里的 `status` 字段；HTTP 状态码统一见 [常见状态码速查](#常见状态码速查)。
+
+> 🕒 **自 v1.6.0 起**：只判定**已配置内容**的图源（此前要求 txt/local/external 三源齐全，
+> external 仓库从不注册，导致 `status` 恒为 `degraded`、Docker 容器恒 unhealthy）。
 
 | status | 含义 |
 |--------|------|
-| `ok` | 图源仓库健康。`local` / `txt` 仓库在启动时即初始化，`/health` 直接检查；`external` 渠道经 `external_pool` 信息性展示 |
-| `degraded` | 部分图源仓库不可用（服务仍可处理其他来源） |
+| `ok` | **已配置内容**的图源都能取图 |
+| `degraded` | 某个已配置的图源不可用 |
+
+> 🔍 判定范围：只判定"已配置内容"的图源（有 TXT 条目 / 有本地图片 / `image.yaml` 配了 API）。
+> - txt / local 的检查覆盖「根目录 + `pc`/`pe` 设备子目录」，子目录缺失会报 `unhealthy`
+> - 没有任何内容的图源（例如只跑 txt 时的 local、未配 `image.yaml` 时的 external）**不参与判定**，
+>   因此 txt-only 的实例同样是 `ok`
+> - `external` 不进入 `status`：它走 `ExternalPool` 而非仓库，可用性看 `checks.external_pool`
+>   与 `checks.circuit_breaker`
+> - Docker 探针：compose 使用 `health-check -strict`，`degraded` 会让容器显示 unhealthy
 
 > `external_pool` / `circuit_breaker` / `circuit_trips` / `cache` 为信息性状态，不参与健康判定。
 > `circuit_trips`（checks 内，字符串）为熔断器累计进入 OPEN 的次数，与 `stats.circuit_trips`（请求被熔断拦截的次数）含义不同。
 > `version` 为代码内置版本号（随发布自动更新，与 CHANGELOG 一致）；
 > 可用环境变量 `APP_VERSION` 临时覆盖。
 > 统计字段两组：`total_*` 自服务启动累计（重启归零）；`today_*` 当日累计，按本地时间每日 0 点自动归零。
+>
+> 📌 **`fail` 的含义是"没有成功返回图片"，与 HTTP 状态码不是一一对应**：
+> 引导页/提示页返回 **200**（SVG 占位图必须用 200，否则 `<img>` 只会显示裂图），
+> 但因为没有真正给出图片而计入 `fail`；参数校验失败、限流拦截等也只记 `fail`。
+> 因此 `total_requests - total_success - total_fail` **不恒为 0**，这是有意的口径差异；
+> 计算成功率请用 `total_success / total_requests`。
 
 ---
 
@@ -345,8 +373,17 @@ GET /health
 | `200` | ✅ 成功 | `mode=json` 或 `mode=image` | 无需处理 |
 | `400` | 参数写错 | 参数值不在允许范围（非法字符、超长等） | 对照 [请求参数](#请求参数) 表检查拼写 |
 | `403` | 被拒绝 | Referer 不在防盗链白名单 | 联系站长确认白名单 |
-| `404` | 分类或 API 不存在 | 分类名与 txt 文件名不一致、多分类全都不存在、external 池无此 API | 检查拼写；Debug 模式下响应会附可用列表 |
+| `404` | 资源不存在 | 分类名与 txt 文件名不一致、多分类全都不存在、external 池无此 API、`source=local` 的文件已被删除、访问了不存在的路径（返回 JSON 而非纯文本） | 检查拼写；Debug 模式下响应会附可用列表 |
 | `405` | 方法不允许 | 用了非 GET 方法（如 POST） | 本 API 仅支持 GET / OPTIONS |
+| `413` | 图片太大 | `source=local` 且文件超过 50MB | 换更小的图，或压缩后重试 |
+| `415` | 类型不支持 | `source=local` 且扩展名不在 jpg/png/gif/webp/bmp/svg 之列 | 换成受支持的图片格式 |
 | `429` | 请求太频繁 | 触发限流（响应附 `Retry-After: 60`，客户端可据此自动退避） | 放慢频率，或联系站长调整限流配置 |
-| `500` | 服务端处理失败 | 图源临时故障等 | 查看服务日志排查 |
+| `500` | 服务端处理失败 | 图源临时故障、本地文件读不出等 | 查看服务日志排查 |
+| `502` | 外部图源取图失败 | `mode=image` 时代理上游返回非 2xx / 非图片内容 / 超过 50MB | 多为上游图床问题；换一张图或稍后重试 |
 | `503` | 图源还没有内容 | 请求的 source 还没配置任何图片 | 页面本身是"开始使用"引导，按提示添加图片 |
+
+> 🕒 **自 v1.6.0 起**：
+> - `source=local` 的错误码由统一的 `502` 拆分为 `404`（文件不存在）/ `415`（类型不支持）/ `413`（超过 50MB）；
+> - `429` 额外携带 `Access-Control-*` 与安全响应头，浏览器 `fetch` 可直接识别限流并读 `Retry-After`；
+> - 未知路径返回 JSON `404`（此前是纯文本 `404 page not found`）；
+> - `mode=image` 代理不再把上游非 2xx 当成功（此前只校验 `Content-Type`）。

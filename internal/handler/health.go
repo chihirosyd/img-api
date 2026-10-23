@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"img-api/internal/config"
+	"img-api/internal/model"
 	"img-api/internal/service"
 )
 
@@ -33,21 +34,42 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 	h.fullHealth(w, r)
 }
 
+// 健康状态字符串常量。
+//
+// 输出契约（/health 的 checks 字段，外部监控可能依赖该格式）：
+//
+//	"healthy"          — 图源可用（判定用这个精确值）
+//	"unhealthy: <原因>" — 图源不可用（由 RandomService.Health 拼接）
+//	"disabled" / "unconfigured (...)" / "healthy (N APIs)" — 信息性状态，不参与判定
+//
+// 历史注记：判定曾用 `strings.HasPrefix(status, "healthy ")`，要求 "healthy" 后恰好
+// 跟一个空格——仓库返回的是不带后缀的 "healthy"，这种前缀判断一改状态串就会静默误判。
+// 现在只比较 healthHealthy 精确值。
+const (
+	healthHealthy = "healthy"
+)
+
 // fullHealth 返回完整内部状态。
 func (h *HealthHandler) fullHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	checks := h.svc.Health(ctx)
 
-	// 只对图源仓库的状态做健康判定（txt / local / external）。
-	// external_pool、circuit_breaker、cache 等属于信息性状态，
-	// 不参与"是否健康"的判断，否则将持续误报 degraded。
+	// 只对"已配置内容"的图源做健康判定：
+	//   - 未初始化的图源（checks 里没有这个键）→ 信息性状态，不参与判定；
+	//   - 没有任何内容的图源（SourceEmpty）→ 同属"未配置"，不参与判定。
+	// 因此 status=ok 的含义是"**已配置的图源**都能取图"，而不是"三种图源都必须存在"。
+	//
+	// 历史：此前把未初始化的图源一律按不健康处理，本意是防止"local 完全不可用也
+	// 恒报 ok"；但 external 仓库从不注册（external 走 ExternalPool，不经 repos），
+	// checks 里永远没有 "external"，于是 /health 恒为 degraded，Docker healthcheck
+	// （compose 带 -strict）把容器判成永久 unhealthy——连 image.yaml 配好的实例也一样。
 	allHealthy := true
-	for _, source := range []string{"txt", "local", "external"} {
-		status, ok := checks[source]
-		if !ok {
-			continue // 该图源从未被请求，未初始化，不参与判定
+	for _, source := range []model.SourceType{model.SourceTxt, model.SourceLocal, model.SourceExternal} {
+		status, ok := checks[string(source)]
+		if !ok || h.svc.SourceEmpty(source) {
+			continue // 未初始化 / 未配置内容：不参与判定
 		}
-		if status != "healthy" && !strings.HasPrefix(status, "healthy ") {
+		if status != healthHealthy {
 			allHealthy = false
 			break
 		}

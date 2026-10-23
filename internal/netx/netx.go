@@ -68,8 +68,50 @@ func IsBlockedIP(ip net.IP) bool {
 		if v6[0] == 0xfe && v6[1]&0xc0 == 0xc0 {
 			return true
 		}
+		// Teredo 2001::/32：地址里编码的是取反后的 IPv4（服务端/客户端各一段），
+		// 解码易错且合法用途极少，整段拦截。
+		if v6[0] == 0x20 && v6[1] == 0x01 && v6[2] == 0x00 && v6[3] == 0x00 {
+			return true
+		}
+		// v4-compatible ::/96（RFC 4291 已废弃）：::a.b.c.d 等价于 a.b.c.d。
+		// 整段拦截（:: 与 ::1 已由 IsUnspecified/IsLoopback 捕获）。
+		if isZeroBytes(v6[:12]) {
+			return true
+		}
+		// NAT64 64:ff9b::/96 与 6to4 2002::/16：解出内嵌 IPv4，按 IPv4 规则再判一次。
+		// 否则 64:ff9b::a9fe:a9fe 这类地址会绕过黑名单直达 169.254.169.254。
+		if v4 := embeddedIPv4(v6); v4 != nil {
+			return IsBlockedIP(v4)
+		}
 	}
 	return false
+}
+
+// embeddedIPv4 从 IPv6 转换地址中解出内嵌的 IPv4（无内嵌则返回 nil）。
+//
+// 覆盖两类可公开路由的转换前缀：
+//   - NAT64 64:ff9b::/96 — 后 4 字节是 IPv4
+//   - 6to4  2002::/16    — 第 2~5 字节是 IPv4
+func embeddedIPv4(v6 net.IP) net.IP {
+	// NAT64：前缀 64:ff9b:: + 中间 8 字节为 0
+	if v6[0] == 0x00 && v6[1] == 0x64 && v6[2] == 0xff && v6[3] == 0x9b && isZeroBytes(v6[4:12]) {
+		return net.IP(v6[12:16])
+	}
+	// 6to4
+	if v6[0] == 0x20 && v6[1] == 0x02 {
+		return net.IP(v6[2:6])
+	}
+	return nil
+}
+
+// isZeroBytes 判断字节切片是否全为 0。
+func isZeroBytes(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // SafeDialer 是带安全校验与短 TTL DNS 缓存的出站拨号器。

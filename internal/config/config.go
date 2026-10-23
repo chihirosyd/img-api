@@ -13,6 +13,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strconv"
@@ -24,6 +25,26 @@ import (
 
 // C 是全局配置单例，Load() 调用后即可安全使用。
 var C *AppConfig
+
+// ImageWarnings 收集 image.yaml 的读取/解析失败信息。
+//
+// config.Load 在日志系统初始化之前执行，问题只能先写 stderr；调用方
+// （app.NewServer）应在 logger 就绪后遍历本切片以 Error 级再记一次，
+// 否则 GUI 用户看不到任何提示（GUI 无控制台，stderr 形同丢弃），
+// 表现为"配了 image.yaml 却不生效"且毫无线索。
+var ImageWarnings []string
+
+// Warnings 收集 .env / 环境变量解析期间的非致命问题（解析失败、非法数值、
+// 非法布尔值、空值覆盖等）。与 ImageWarnings 同理：Load 阶段日志系统还没就绪，
+// 只能写 stderr；GUI 没有控制台，必须由调用方在日志就绪后补记到日志文件。
+var Warnings []string
+
+// warnf 记录一条配置告警：写入 Warnings 并同时输出到 stderr。
+func warnf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	Warnings = append(Warnings, msg)
+	fmt.Fprintln(os.Stderr, "⚠️  "+msg)
+}
 
 // AppConfig 聚合所有应用配置项，与 .env.example 一一对应。
 type AppConfig struct {
@@ -82,8 +103,14 @@ func Load(rootPath string) error {
 	if _, statErr := os.Stat(envFile); statErr == nil {
 		m, err := godotenv.Read(envFile)
 		if err != nil {
-			// 文件存在但解析失败：此时日志系统尚未初始化，输出到 stderr
-			fmt.Fprintf(os.Stderr, "⚠️  failed to parse .env: %v\n", err)
+			// 文件存在但解析失败：此时日志系统尚未初始化，输出到 stderr。
+			// 必须说清后果——godotenv 失败时整个文件都不会生效（常见触发是值里的
+			// `$` 展开失败），此前只报 "failed to parse"，用户会以为"改的配置已生效"。
+			fmt.Fprintf(os.Stderr,
+				"⚠️  failed to parse .env: %v\n"+
+					"    注意：解析失败时**整个 .env 都会被忽略**，所有配置回落默认值/系统环境变量。\n"+
+					"    常见原因：值里的 $ 被当作变量展开（请用单引号包裹，如 REDIS_PASSWORD='pa$sw0rd'）。\n", err)
+			Warnings = append(Warnings, fmt.Sprintf("parse .env: %v（整份 .env 已忽略）", err))
 		} else {
 			// 键名归一化为大写：.env 中 app_port 与 APP_PORT 等价（大小写不敏感）
 			values = make(map[string]string, len(m))
@@ -94,26 +121,46 @@ func Load(rootPath string) error {
 	}
 
 	// 步骤 2 — 取值器：环境变量 > .env > 默认值（键名大小写不敏感）
+	//
+	// 空值视为"未设置"：Docker Compose 里写 `APP_HOST:` 会注入空字符串，
+	// 若当成有效值，`APP_HOST=` 会让服务监听 0.0.0.0（绕过 .env 的 127.0.0.1），
+	// `LOG_DIR=` 则会因 MkdirAll("") 直接启动失败。
 	getStr := func(key string) string {
-		if v, ok := lookupEnvFold(key); ok {
+		if v, ok := lookupEnvFold(key); ok && strings.TrimSpace(v) != "" {
 			return v
 		}
-		if v, ok := values[strings.ToUpper(key)]; ok {
+		if v, ok := values[strings.ToUpper(key)]; ok && strings.TrimSpace(v) != "" {
 			return v
 		}
 		return defaults[key]
 	}
 	getBool := func(key string) bool {
-		b, err := strconv.ParseBool(getStr(key))
-		return err == nil && b
+		raw := strings.TrimSpace(getStr(key))
+		b, err := strconv.ParseBool(raw)
+		if err != nil {
+			// 非法值不再静默当作 false：RATE_LIMIT_ENABLED=yes 会静默关掉限流
+			if raw != "" {
+				warnf("%s=%q 不是合法布尔值（true/false），已按 false 处理", key, raw)
+			}
+			return false
+		}
+		return b
 	}
 	getInt := func(key string) int {
-		n, err := strconv.Atoi(strings.TrimSpace(getStr(key)))
+		raw := strings.TrimSpace(getStr(key))
+		n, err := strconv.Atoi(raw)
 		if err != nil {
-			if d, ok := defaults[key]; ok {
-				if dn, err2 := strconv.Atoi(d); err2 == nil {
-					return dn
+			d, ok := defaults[key]
+			dn, derr := strconv.Atoi(d)
+			if ok && derr == nil {
+				// 此前 Atoi 失败直接回退默认、无任何提示，注释宣称的告警并未生效
+				if raw != "" {
+					warnf("%s=%q 不是合法整数，已回退默认 %s", key, raw, d)
 				}
+				return dn
+			}
+			if raw != "" {
+				warnf("%s=%q 不是合法整数，已回退 0", key, raw)
 			}
 			return 0
 		}
@@ -122,13 +169,27 @@ func Load(rootPath string) error {
 
 	// 步骤 3 — 外部 API 池 YAML 配置（可选）
 	Image = &ImageConfig{}
+	ImageWarnings = nil
 	imageFile := rootPath + "/config/image.yaml"
 	if _, statErr := os.Stat(imageFile); statErr == nil {
 		b, err := os.ReadFile(imageFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  failed to read config/image.yaml: %v\n", err)
-		} else if err := yaml.Unmarshal(b, Image); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  failed to parse config/image.yaml: %v\n", err)
+			msg := fmt.Sprintf("read config/image.yaml: %v", err)
+			ImageWarnings = append(ImageWarnings, msg)
+			fmt.Fprintf(os.Stderr, "⚠️  failed to %s\n", msg)
+		} else {
+			// KnownFields：拼错键名（如 external_api）或多写未知字段时直接报错，
+			// 而不是静默忽略——"配了却不生效"是这类 YAML 最常见的坑。
+			dec := yaml.NewDecoder(bytes.NewReader(b))
+			dec.KnownFields(true)
+			if err := dec.Decode(Image); err != nil {
+				// 解析失败时整个文件都不生效（external 池为空 → source=external 返回
+				// 503 引导页）。记录到 ImageWarnings，供 logger 就绪后以 Error 级落盘。
+				msg := fmt.Sprintf("parse config/image.yaml: %v", err)
+				ImageWarnings = append(ImageWarnings, msg)
+				fmt.Fprintf(os.Stderr, "⚠️  failed to %s\n"+
+					"    注意：解析失败时**整份 image.yaml 均不生效**，source=external 会返回未配置引导页。\n", msg)
+			}
 		}
 	}
 
@@ -184,8 +245,18 @@ func Load(rootPath string) error {
 	// 端口范围校验：非法值（0 会绑定随机端口、>65535 启动失败）回退默认并明确告警，
 	// 避免"静默改端口"（此前 APP_PORT=abc 静默用 8080、=0 静默绑随机端口均无提示）
 	if C.Port <= 0 || C.Port > 65535 {
-		fmt.Fprintf(os.Stderr, "⚠️  APP_PORT 非法（%d），已回退默认 8080（合法范围 1~65535）\n", C.Port)
+		warnf("APP_PORT 非法（%d），已回退默认 8080（合法范围 1~65535）", C.Port)
 		C.Port = 8080
+	}
+	// 日志级别归一化 + 非法值告警：项目其余枚举值（type/source/mode/DEFAULT_SOURCE）
+	// 都做了小写归一化，此前 LOG_LEVEL 却是精确匹配——写 DEBUG / Info 会静默回落到
+	// info 且无任何提示，与"配置项大小写不敏感"的声明不一致。
+	switch strings.ToLower(strings.TrimSpace(C.LogLevel)) {
+	case "debug", "info", "warn", "error":
+		C.LogLevel = strings.ToLower(strings.TrimSpace(C.LogLevel))
+	default:
+		warnf("LOG_LEVEL 非法（%q），已回退默认 info（可选：debug / info / warn / error）", C.LogLevel)
+		C.LogLevel = "info"
 	}
 
 	// ── 配置健全性告警（日志系统尚未初始化，输出到 stderr）──
@@ -202,7 +273,7 @@ func Load(rootPath string) error {
 		{"log_level", C.LogLevel}, {"log_dir", C.LogDir},
 	} {
 		if strings.Contains(c.value, "$") {
-			fmt.Fprintf(os.Stderr, "⚠️  配置 %s 包含 $：.env 解析器会将其作为变量展开，请用单引号包裹该值（详见 docs/CONFIG.md）\n", c.name)
+			warnf("配置 %s 包含 $：.env 解析器会将其作为变量展开，请用单引号包裹该值（详见 docs/CONFIG.md）", c.name)
 		}
 	}
 
@@ -251,7 +322,7 @@ var defaults = map[string]string{
 	"APP_DEBUG": "false",
 	"APP_NAME":  "img-api",
 	"APP_HOST":  "0.0.0.0",
-	"APP_VERSION": "1.5.0",
+	"APP_VERSION": "1.6.0",
 	"APP_PORT":   "8080",
 
 	"CORS_ENABLED":       "true",

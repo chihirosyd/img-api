@@ -138,8 +138,15 @@ func (b *Breaker) Call(fn func() error) error {
 	}()
 
 	// 3. 记录结果。客户端取消/超时（context.Canceled/DeadlineExceeded）
-	//    不算上游故障：不改变熔断状态（半开探测槽位仍消耗一次，可接受）
+	//    不算上游故障：不改变熔断状态；但**必须归还半开探测占用的槽位**——
+	//    此前只 return 不归还，每取消一次就永久占掉一个槽，halfTries 达到
+	//    halfOpenMax 后状态会永远停在 HALF_OPEN，external 图源只能重启恢复。
 	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		b.mu.Lock()
+		if b.state == StateHalfOpen && b.halfTries > 0 {
+			b.halfTries--
+		}
+		b.mu.Unlock()
 		return err
 	}
 

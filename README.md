@@ -27,7 +27,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 - 🗂️ **本地图片索引** — `local.json` 首启自动生成，支持定时自动刷新，无索引时自动扫目录兜底
 - 📦 **免依赖部署** — 静态编译为独立二进制，无需 Go 环境、数据库或任何运行时；`build-index` / `sync-redis` / `health-check` 三个配套工具随 Release 包提供
 - 🖥️ **Windows 图形控制面板**（`img-api-gui.exe`）— 启动/停止服务、核心设置编辑、开机自启、后台托盘运行，小白双击即用
-- 🐳 **Docker 支持** — Alpine 多阶段构建、非 root 运行，镜像精简
+- 🐳 **Docker 支持** — Alpine 多阶段构建、镜像精简；容器内由 entrypoint 建目录后 `su-exec` 降权，主进程以非 root 运行
 - 🔄 **CI/CD** — GitHub Actions 自动编译 5 平台二进制并发布 Release
 - 📊 **访问日志** — 每个请求记录 request_id、状态码与耗时，便于排障（健康检查探测不记录）
 
@@ -145,17 +145,17 @@ GET /health              → 完整状态与运行时统计
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `APP_PORT` | `8080` | 应用监听端口（Docker 部署时指容器内端口，改端口需同步 compose 端口映射右侧） |
-| `RATE_LIMIT_MAX` | `60` | 每分钟每 IP 最大请求 |
-| `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔），Nginx 转发后依然生效 |
-| `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔，可选），填写后限流与应用自带日志按真实访客 IP 统计（网关自身日志不受影响） |
 | `REDIS_ADDR` | — | Redis 地址（留空禁用） |
-| `LOCAL_INDEX_REFRESH` | — | 本地图片索引自动刷新计划（三种写法任选其一）：`0`/空=仅首启生成；Go duration（`30m`/`24h`/`168h`）、`@daily` 等描述符、5 字段 cron |
-| `TXT_DEFAULT_CATEGORY` | — | txt 渠道默认分类（请求不带 `category` 时使用，留空=`default`） |
-| `LOCAL_DEFAULT_CATEGORY` | — | local 渠道默认分类（同上，留空=`default`） |
-| `CIRCUIT_FAILURE_THRESHOLD` | `5` | 熔断失败阈值 |
+| `REFERER_WHITELIST` | — | 防盗链域名（逗号分隔），Nginx 转发后依然生效 |
+| `TRUSTED_PROXIES` | — | 可信反代网段（CIDR，逗号分隔，可选），填写后限流与应用自带日志按真实访客 IP 统计 |
+| `LOCAL_INDEX_REFRESH` | — | 本地图片索引自动刷新计划：`0`/空=仅首启生成；或 Go duration（`30m`）、`@daily`、5 字段 cron |
 | `CORS_ENABLED` | `true` | 跨域响应头；`<img>` 嵌图无需跨域，Nginx 已处理时可关闭 |
 
-> 📚 完整配置参考见 [docs/CONFIG.md](docs/CONFIG.md)
+> 📚 完整配置参考（限流阈值、默认分类、熔断参数、日志、版本等）见 [docs/CONFIG.md](docs/CONFIG.md)
+>
+> ⚠️ 上表是**代码内置默认值**（不建 `.env` 时的行为）。`.env.example` 是面向
+> 「前方有 Nginx/OpenResty 网关」的模板，其中 `CORS_ENABLED` / `RATE_LIMIT_ENABLED`
+> 为 `false`（跨域与限流交给网关）；直接暴露端口时请显式写 `true`。详见 CONFIG.md。
 
 ---
 
@@ -171,11 +171,15 @@ go run ./cmd/setversion
 # 2. 升级依赖并提交（本地需 Go 1.26+），先推 main
 go get -u ./... && go mod tidy && git add -A && git commit -m "release vX.Y.Z"
 git push origin main
-# 3. 等 Update go.sum 工作流跑完，git pull --rebase 后打 tag
+# 3. 等 Update go.sum 工作流跑完，先 pull 再打 tag（否则 tag 落在旧提交上）
+git pull --rebase
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 > 💡 tag 推送后 CI 自动完成检查、5 平台编译、Release 与 GHCR 镜像发布。
+
+> 📘 改代码前请先看 [CONTRIBUTING.md](CONTRIBUTING.md)：它约定了配置/状态码/索引生效方式等
+> "一处为准、多处同步"的对应关系，以及行为变更时的版本注记规则。
 
 ---
 
@@ -259,12 +263,20 @@ resources/local/
 
 > 📁 源码/二进制包部署时，`pc/default/` 与 `pe/default/` 目录骨架已随项目提供；
 > Docker 远程镜像部署（只下载 compose 文件）时，首次启动会自动补齐这些目录。
-> 直接把图片放进去即可。
+> 由于这些目录由 Docker 以 **root** 创建，Linux 上普通用户可能没有写权限——
+> 先 `sudo chown -R $(id -u):$(id -g) resources/` 再把图片放进去即可
+> （或在 `docker compose up` 之前先手工建好 `resources/` 目录）。
 
-> ⚠️ 生效时机：**新增分类**（新目录）即时生效；**已有分类中增删图片**需重建索引并重启加载：
-> 先运行 `./build-index`（源码 `go run ./cmd/build-index/`，Docker `docker compose exec img-api /app/build-index`），
-> 再重启服务；或删除 `storage/index/local.json` 后重启自动重建；或等 `LOCAL_INDEX_REFRESH` 计划刷新。
-> 索引重建前删除的图片可能随机返回 502，新增的图片不会被选中。
+> ⚠️ 生效时机：**新增分类**（新目录）即时生效；**已有分类中增删图片**需重建索引，再让服务加载：
+> 运行 `./build-index`（源码 `go run ./cmd/build-index/`，Docker `docker compose exec img-api /app/build-index`）
+> 后**重启**，或直接**发 `SIGHUP` 免重启**（见下方）；也可删除 `storage/index/local.json` 后重启自动重建，
+> 或等 `LOCAL_INDEX_REFRESH` 计划刷新。
+> 索引重建前删除的图片可能随机返回 404（索引里仍指向已不存在的文件），新增的图片不会被选中。
+>
+> 💡 **免重启重建（推荐）**：向服务进程发 `SIGHUP` 即可立即重扫 `resources/local` 并更新索引，
+> 无需 exec 也无需重启 —— Linux/容器：`kill -HUP <pid>`、`docker compose kill -s HUP img-api`（服务名即可）。
+> 重建成功后分类清单立即刷新（不必等 30 秒快照过期）。
+> ⚠️ Windows 不支持 `SIGHUP`：该平台请用 `build-index.exe` 或重启服务。
 >
 > 💡 Docker 命令中的 `img-api` 是 compose 服务名（非容器名），
 > 运行 `docker compose ps --services` 查看实际服务名并替换。

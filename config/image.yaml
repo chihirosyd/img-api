@@ -14,7 +14,8 @@
 #   url_field     — JSON 响应中图片 URL 的字段路径（如 "urls.raw"）
 #   headers       — 自定义请求头（如 Authorization）
 #   categories       — 该 API 支持的分类列表，空或 ["all"] 表示匹配所有
-#   default_category — 默认分类（多值随机选一）；空=不传分类（{category} 置空、不加 category_param）
+#   default_category — 默认分类（**必须是列表**，单个也要写成 [xxx]）；空=不传分类
+#                      （{category} 置空、不加 category_param）
 #   category_param   — 分类对应的 query 参数名，如 "query"（可选）
 # 注意：请求与提取出的图片 URL 只接受 http/https（其他协议会被拒绝，防透出非法地址）
 #
@@ -45,6 +46,7 @@ external_apis:
   #   url_field: urls.raw
   #   category_param: query                 # → &query=nature
   #   categories: [nature, anime, scenery, beauty]
-  #   default_category: scenery              # 单个默认分类
+  #   default_category: [scenery]            # 列表写法，单个分类也要加方括号
   #   headers:
   #     Authorization: "Client-ID YOUR_ACCESS_KEY"
+  #     # 头名按写法原样使用（大小写敏感的上游不会被改成小写）

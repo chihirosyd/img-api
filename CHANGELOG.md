@@ -2,7 +2,58 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
-## [未发布]
+## [1.6.0] - 2026-10-23
+
+### ⚠️ 升级注意（行为变化）
+
+> 以下变化会让"按旧行为配置"的部署或监控看到不同结果，升级前请对照检查。
+
+- `/health` 的 `status=ok` 含义变了：现在只要求**已配置内容**的图源可用（此前要求 txt/local/external 三源齐全，而 external 仓库从不注册，导致 `status` 恒为 `degraded`、Docker 容器恒 `unhealthy`）。升级后健康状态会由 `degraded` 变为 `ok`——若你的监控按 `degraded` 报警，请改为按 `unhealthy` 或具体 `checks` 字段判断。
+- `source=local` 的错误码拆分为 `404`（文件不存在）/ `415`（类型不支持）/ `413`（超过 50MB），不再统一返回 `502`。按 502 配置的告警或重试规则需要调整。
+- 防盗链对根路径 `/` 的出图分支生效：以前把 `/random` 换成 `/` 即可绕过白名单，现在会被 403。若有页面以 `<img src="https://你的站点/">` 方式嵌入且来源不在白名单，升级后会变成裂图。
+- `.env` 解析更严格也更一致：空环境变量视为"未设置"（`APP_HOST=` 不再把服务暴露到 `0.0.0.0`）；成对引号会被剥掉；`image.yaml` 里的未知键会直接报错（此前静默忽略）。
+
+### 修复
+
+- GUI 重复启动崩溃：日志初始化失败后再次「启动服务」会空指针 panic（`loggerOnce` 消费后仍用 nil logger）。改为包级初始化状态，失败可重试且始终返回错误
+- `X-Request-ID` 截断逻辑修正：此前按**字节**判断长度、按**字符**切片，客户端发 22 个中文字符（66 字节 / 22 rune）即触发 slice 越界 panic（500 + 完整堆栈，且该请求在访问日志与限流之前就崩、不占配额）。改为按 rune 边界截断，零额外分配，并补齐"字节超限但字符不足"与 4 字节字符的回归用例
+- 熔断器半开探测遇到客户端取消/超时后不归还探测槽位：每断开一次就永久占掉一个槽，累计 `CIRCUIT_HALF_OPEN_MAX` 次后状态永远停在 `HALF_OPEN`，external 图源只能重启恢复。现在取消/超时路径会归还槽位（仍不计为上游失败）
+- `sync-redis` 孤儿清理不再误删「读取失败」的分类：此前一次瞬时 IO 错误（或 `-dir` 指错）会把仍存在的 Redis 集合当成"分类已删除"清掉。现在区分「读取失败 → 保留」与「文件存在但无有效 URL → 删除」，写入改为临时 key + `RENAME` 原子替换（`SAdd` 失败不再丢旧集合），且一个 `.txt` 都没找到时直接跳过清理
+- `mode=image` 代理不再把上游错误当成功：非 2xx 响应直接返回 502（此前只校验 `Content-Type`，上游 404/5xx 返回的图片占位图会被当 200 转发）；`io.Copy` 中途断开的错误不再被丢弃（记告警并按失败统计）；超过 50MB 上限改用 `http.ErrAbortHandler` 中止连接（此前依赖 `Hijack`，在 HTTP/2 或非 Hijacker writer 上失败后会正常收尾，客户端拿到被截断却"看似完整"的图片）
+- 防盗链不再被根路径旁路：`/` 在 `<img>` 嵌入（`Accept` 以 `image/` 开头）或带 `?mode=` 时会直接出图，此前中间件按路径无条件豁免，盗链方把 `/random` 换成 `/` 即可绕过白名单。现在只豁免"浏览器地址栏访问首页"这一类请求，出图分支照常校验 `Referer`
+- `TRUSTED_PROXIES` 下的客户端 IP 改为**从右向左取第一个不可信地址**：此前取 `X-Forwarded-For` 最左段，网关若用 `$proxy_add_x_forwarded_for`（追加语义），最左段就是客户端自带值，每次换一个伪造 IP 即可换一个限流桶（等于无限额），日志也会被写脏。现在逐段跳过可信网段，取最接近真实客户端且无法伪造的那一跳
+- SSRF 黑名单补齐 IPv6 转换段：NAT64 `64:ff9b::/96` 与 6to4 `2002::/16` 会先解出内嵌的 IPv4 再按 IPv4 规则判定（`64:ff9b::a9fe:a9fe` 实际就是 `169.254.169.254`），Teredo `2001::/32` 与已废弃的 v4-compatible `::/96` 整段拦截。此前这些地址会绕过黑名单直达内网或云元数据地址
+- 限流 429 响应补齐跨域与安全响应头：限流器在 CORS 外层，此前命中限流时 CORS 中间件不会执行，浏览器 fetch 只能看到"CORS 错误"、读不到 429 与 `Retry-After`，前端无法识别是限流并优雅退避；现在 429 分支会补上与正常响应一致的 `Access-Control-*` 与安全头
+- 图库与缓存层修正：Redis 不再把"客户端取消/超时"当成 Redis 故障（此前一次刷新就会让全站绕过 Redis 30 秒并打假告警）；本地索引重建串行化并修正临时文件权限；分类判定改为递归，与索引扫描口径一致（图片放在子目录时不再"能出图但分类不存在"）；`external` 指定 `api_name` 时按该 API 的分类白名单过滤；健康检查会拒绝"设备目录是普通文件/不可读"的情况
+- 配置解析修正：`.env` 中带引号的值不再被 GUI 原样当成字符串（`RATE_LIMIT_ENABLED="true"` 此前会被误判为 false 并写回关闭限流）；支持 `export` 前缀与 BOM；写回时对含 `#`/`$` 的值加引号；空环境变量视为"未设置"（`APP_HOST=` 不再把服务暴露到 `0.0.0.0`）；非法数字/布尔值、未知 YAML 键、`.env` 解析失败等告警现在会写入日志（GUI 可见）
+- 部署与文档修正：手动 `docker run` 不再挂载会被 entrypoint 覆盖的 `.env`；`TRUSTED_PROXIES` 示例去掉中文（此前复制后解析失败、静默忽略）；Nginx 示例把 `limit_req_zone` 移回 `http {}`；CI 工作流权限收窄到各 job（PR 任务只读，PR 构建不再登录 GHCR）；README 补 `git pull --rebase` 与远程部署的目录权限说明；镜像内附 `LICENSE`；`mode=json` 的 `url` 说明更正为相对项目根目录；状态码表补 502/413/415
+- 进程生命周期修正：`Shutdown` 改为先等在途请求结束再关缓存/调度器，且 HTTP 超时也会清理后台资源；GUI 启动失败会回收已创建的 Server；redirect 模式只在"上游不支持 HEAD"（405/501/403）时降级 GET，取消/超时不再重发
+- `config/image.yaml` 的 `headers` 头名不再被强制转小写：此前配置的 `X-Api-Key` 会变成 `x-api-key`，被大小写敏感的鉴权网关拒绝且无任何线索；`User-Agent` 判定改为大小写不敏感，重复键防护真正生效（此前该分支不可达）
+- `image.yaml` 模板示例修正：`default_category` 必须写成列表（`[scenery]`），照抄标量写法会让**整份配置解析失败**、external 图源静默失效
+- `build-index` 改为复用主服务的索引写入实现（原子写入 + 落盘 + 重命名）：此前它用固定名 `.tmp` 且不落盘，与主服务行为不一致
+- `/health` 不再虚报健康：txt/local 的检查覆盖 `pc`/`pe` 设备子目录（此前只 stat 根目录，而该目录永远存在）；判定只覆盖**已配置内容**的图源（无内容的图源为信息性状态、不计入），`status=ok` 现在意味着"已配置的图源都能取图"——`external` 走 `ExternalPool` 而非仓库，不参与该判定，因此 txt-only 或已配 external 的实例都能正常返回 `ok`（此前 external 键永不出现，导致 `status` 恒为 `degraded`、Docker 容器恒 unhealthy）
+- `WriteJSON` 序列化失败时不再返回「200 + 空 body」：改为先序列化再写响应头，失败记告警日志并降级为 500 JSON
+- 文档修正：删除 `API.md` 中已不存在的 `local source does not support mode=redirect` 400 示例、统一 local `mode=json` 的 `url` 字段为"相对项目根目录"、404 示例标注仅 Debug 返回；`CONFIG.md` 的 Nginx 示例改为 `$remote_addr` 覆盖 XFF（原 `$proxy_add_x_forwarded_for` 是追加语义，会让伪造 XFF 生效、绕过限流）
+- GUI 读取 `.env` 的键匹配改为大小写不敏感，并剥离行内注释：此前 `.env` 里手写 `app_port=9090` 时主服务按 9090 运行、GUI 却显示 8080，点「保存并重启」会把端口改回去
+- GUI 的展示地址与「打开首页」跟随 `APP_HOST`（此前硬编码 `127.0.0.1`，改过监听地址后按钮指向无效地址）
+- `LOG_LEVEL` 值改为大小写不敏感并校验非法值（此前 `LOG_LEVEL=DEBUG` 会静默回落到 `info`）
+
+### 变更
+
+- Docker 镜像内置配置改为模板 `/app/.env.default`：容器首次启动用它生成 `config/.env`，之后不再覆盖；`.env.example` 明确标注为「面向有网关部署的推荐值」（`CORS_ENABLED` / `RATE_LIMIT_ENABLED` 为 `false`，而代码内置默认是 `true`）
+- 访问日志新增 `query` 字段（超长截断到 256 字节）：`/random` 的语义都在 query 里，此前只记 Path，出现 502 无法从日志判断是哪个 source/category/api
+- `.env.example` 的日志项说明移到值上一行（模板不再使用行内注释）
+
+### 新增
+
+- **SIGHUP 按需重建本地索引**：`kill -HUP <pid>` 或 `docker compose kill -s HUP img-api` 立即重扫 `resources/local` 并更新索引，取代「exec build-index + 重启服务」两步流程；重建后分类快照立即失效（新分类无需等 30 秒）
+
+### 优化
+
+- `logger` 新增 `Close()`：停止后台清理协程并关闭日志文件（供测试与优雅退出释放文件句柄，Windows 下未关闭的句柄会阻塞文件删除）
+- 图片输出恢复 `io.ReaderFrom` 快速路径：中间件包装器（`statusRecorder`/`recoveryWriter`）此前未透传该方法，`mode=image` 的代理与本地文件输出退化为 32KB 用户态缓冲拷贝；本地文件现可走 `sendfile` 零拷贝
+- 启动日志新增 `root` 与 `log_dir` 字段：根目录探测错误（发布版最常见的坑）可一眼确认
+- `.dockerignore` 补充 `/img-api-gui.exe`、`/setversion*` 与本地构建缓存目录（避免大文件进入构建上下文）
 
 ## [1.5.0] - 2026-09-14
 

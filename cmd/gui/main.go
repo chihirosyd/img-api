@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && cgo
 
 // img-api-gui — Windows 桌面控制面板。
 //
@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,23 +63,33 @@ func main() {
 	heroDim := color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xb0} // 副文字 69% 白
 	// 服务启动前就显示 .env 中配置的端口（不再闪现硬编码 8080）
 	envValues, _ := config.ReadEnvValues(rootPath)
+	// 展示地址跟随 APP_HOST：只监听 127.0.0.1 时用它，其余（含 0.0.0.0）用 localhost
+	// ——此前硬编码 127.0.0.1，用户改过监听地址后「打开首页」指向的地址并不可用。
+	// 注意 0.0.0.0 不是可访问的地址，需换成 localhost。
+	displayHost := func() string {
+		h := strings.TrimSpace(getDefault(envValues, "APP_HOST", "0.0.0.0"))
+		if h == "" || h == "0.0.0.0" || h == "::" || h == "[::]" {
+			return "localhost"
+		}
+		return h
+	}()
 	statusDot := canvas.NewCircle(dotGray)
 	statusLabel := canvas.NewText("服务已停止", heroWhite)
 	statusLabel.TextSize = 16
 	statusLabel.TextStyle = fyne.TextStyle{Bold: true}
-	urlLabel := canvas.NewText("http://127.0.0.1:"+getDefault(envValues, "APP_PORT", "8080"), heroDim)
+	urlLabel := canvas.NewText("http://"+displayHost+":"+getDefault(envValues, "APP_PORT", "8080"), heroDim)
 	urlLabel.TextSize = 12
 	versionLabel := widget.NewLabel("img-api")
 	refreshStatus := func() {
 		if srv != nil && srv.Running() {
 			statusDot.FillColor = dotGreen
 			statusLabel.Text = fmt.Sprintf("运行中 · 端口 %d · v%s", srv.Port(), config.C.Version)
-			urlLabel.Text = fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+			urlLabel.Text = fmt.Sprintf("http://%s:%d", displayHost, srv.Port())
 			versionLabel.SetText(fmt.Sprintf("img-api v%s", config.C.Version))
 		} else {
 			statusDot.FillColor = dotGray
 			statusLabel.Text = "服务已停止"
-			urlLabel.Text = fmt.Sprintf("http://127.0.0.1:%d", config.C.Port)
+			urlLabel.Text = fmt.Sprintf("http://%s:%d", displayHost, config.C.Port)
 			versionLabel.SetText(fmt.Sprintf("img-api v%s", config.C.Version))
 		}
 		statusDot.Refresh()
@@ -116,6 +127,9 @@ func main() {
 			return err
 		}
 		if err := s.Start(); err != nil {
+			// 启动失败（如端口被占用）也要清理：NewServer 已创建缓存连接、
+			// 预热仓库与限流协程，直接丢弃会每点一次"启动"泄漏一次。
+			_ = s.Shutdown(context.Background())
 			return err
 		}
 		srv = s
@@ -163,7 +177,8 @@ func main() {
 		if srv != nil && srv.Running() {
 			port = srv.Port()
 		}
-		imgapp.OpenHome(port)
+		// 与状态栏同一地址（跟随 APP_HOST），避免监听地址改过后打开无效地址
+		imgapp.OpenURL(fmt.Sprintf("http://%s:%d/", displayHost, port))
 	})
 	homeBtn.Importance = widget.LowImportance
 	dirBtn := widget.NewButtonWithIcon("配置目录", theme.FolderOpenIcon(), func() {
@@ -331,10 +346,16 @@ func main() {
 	w.ShowAndRun()
 }
 
-// getDefault 从 env map 取值，缺失时返回默认值。
+// getDefault 从 env map 取值（键名大小写不敏感，与 config.Load / UpdateEnvFile 一致），
+// 缺失或为空时返回默认值。
+//
+// 此前用精确键匹配：用户在 .env 里手写 app_port=9090 时，主服务按 9090 运行，
+// 而 GUI 显示 8080——点「保存并重启」会把端口改回 8080，属于静默改写用户配置。
 func getDefault(m map[string]string, key, def string) string {
-	if v, ok := m[key]; ok && v != "" {
-		return v
+	for k, v := range m {
+		if strings.EqualFold(k, key) && v != "" {
+			return v
+		}
 	}
 	return def
 }

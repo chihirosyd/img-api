@@ -34,9 +34,21 @@ func RequestID() Middleware {
 				_, _ = rand.Read(b)
 				rid = hex.EncodeToString(b) // 16 位短 ID
 			} else if len(rid) > maxIDLen {
-				// 按 rune 截断，避免按字节切断多字节 UTF-8 字符（产生非法字符序列）
-				runes := []rune(rid)
-				rid = string(runes[:maxIDLen])
+				// len() 是字节数，maxIDLen 是字符数：中文/emoji 等多字节字符会让
+				// 字节数远大于字符数。按 rune 边界截断，既不会切断 UTF-8 字符，
+				// 也不会在"字节超限、字符却不足 64"时越界（此前 runes[:64] 会 panic：
+				// 22 个中文字符 = 66 字节 / 22 rune 即触发）。
+				// 用下标遍历而非 []rune 转换：客户端可送近 1MB 的头部，
+				// 转 []rune 会按 4 字节/字符放大内存，这里零额外分配。
+				count, cut := 0, len(rid)
+				for i := range rid {
+					if count == maxIDLen {
+						cut = i
+						break
+					}
+					count++
+				}
+				rid = rid[:cut]
 			}
 			w.Header().Set("X-Request-ID", rid)
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), CtxKeyRequestID, rid)))

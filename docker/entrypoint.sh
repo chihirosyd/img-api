@@ -4,7 +4,7 @@
 #
 # 执行流程（以 root 运行）：
 #   1. 自动创建运行时目录（用户无需手动创建任何文件夹）
-#   2. 处理 .env 配置（首次启动自动生成，后续启动用宿主机的覆盖）
+#   2. 处理 .env 配置（首次启动用内置模板 /app/.env.default 生成 config/.env，后续用宿主机的）
 #   3. 兜底生成 config/image.yaml（compose 挂载覆盖后仍保证示例文件存在）
 #   4. 兜底补齐 resources 图库骨架（compose 挂载覆盖后仍保证 default.txt 与目录存在）
 #   5. 修正目录所有权（宿主机挂载的目录默认是 root，降权前改为 appuser）
@@ -21,13 +21,13 @@ mkdir -p /app/storage/logs
 mkdir -p /app/storage/index
 
 # ── 第 2 步：处理 .env 配置 ──
-# 首次启动：将默认 .env 复制到宿主机挂载的 /app/config/ 供用户编辑
-# 后续启动：用 /app/config/.env 覆盖容器内默认值
-if [ -f /app/config/.env ]; then
-    cp /app/config/.env /app/.env
-else
-    cp /app/.env /app/config/.env
+# 镜像内置的是 /app/.env.default（配置模板，不直接当运行时配置）；
+# 首次启动把它复制到宿主机挂载的 /app/config/.env 供用户编辑，
+# 之后每次启动都从 /app/config/.env 加载。
+if [ ! -f /app/config/.env ]; then
+    cp /app/.env.default /app/config/.env
 fi
+cp /app/config/.env /app/.env
 
 # ── 第 3 步：兜底生成 config/image.yaml ──
 # compose 挂载 ./config 时会覆盖镜像内置的配置目录，首次启动宿主机侧为空目录；

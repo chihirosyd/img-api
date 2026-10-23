@@ -32,11 +32,7 @@ func CORS() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// CORS 头
-			h := w.Header()
-			h.Set("Access-Control-Allow-Origin", "*")
-			h.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
-			h.Set("Access-Control-Max-Age", "86400")
+			setCORSHeaders(w)
 
 			// 安全响应头
 			addSecurityHeaders(w)
@@ -50,6 +46,18 @@ func CORS() Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// setCORSHeaders 设置跨域响应头。
+//
+// 除 CORS 中间件外，限流器的 429 分支也要调用：限流器在 CORS 外层，
+// 命中时 CORS 不会执行，若不补头，浏览器只会报跨域错误而拿不到 429。
+func setCORSHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+	h.Set("Access-Control-Max-Age", "86400")
 }
 
 // addSecurityHeaders 添加安全相关的 HTTP 响应头。

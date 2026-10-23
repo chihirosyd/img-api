@@ -136,18 +136,27 @@ func txtCategoriesForDevice(root, device string) []string {
 
 // localCategoryExistsForDevice 检查指定设备目录（pc/pe）下某分类是否包含图片。
 // 供 CategoryExistsFor 与分类清单快照按设备精确判定使用。
+//
+// 必须递归：索引扫描（ScanLocalImages）与目录兜底扫描都包含子目录，
+// 若这里只看第一层，"图片全放在子目录里"的分类会出现 Random 能出图、
+// 但分类清单不列、多分类被过滤掉的自相矛盾。
 func localCategoryExistsForDevice(root, device, category string) bool {
 	dir := filepath.Join(root, device, category)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if !e.IsDir() && model.ImageExts[strings.ToLower(filepath.Ext(e.Name()))] {
-			return true
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // 单项错误跳过，继续找
 		}
-	}
-	return false
+		if d.IsDir() {
+			return nil
+		}
+		if model.ImageExts[strings.ToLower(filepath.Ext(d.Name()))] {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // localCategoriesForDevice 列出指定设备目录下含图片的分类目录名（保持目录顺序）。

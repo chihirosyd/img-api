@@ -29,7 +29,7 @@ type ImageConfig struct {
 
 // UnmarshalYAML 在解码前递归将键名归一化为小写，
 // 使键名大小写不敏感（EXTERNAL_APIS / External_Apis 均可识别）。
-// 注意：headers 的键（HTTP 头名）也会被转为小写——HTTP 头本身大小写不敏感，无影响。
+// ⚠️ 例外：headers 子映射的键保持原样（见 normalizeYAMLKeys）。
 func (c *ImageConfig) UnmarshalYAML(value *yaml.Node) error {
 	normalizeYAMLKeys(value)
 	type plain ImageConfig
@@ -42,11 +42,22 @@ func (c *ImageConfig) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // normalizeYAMLKeys 递归将 mapping 的键转为小写（值原样保留）。
+//
+// ⚠️ 唯一例外：`headers` 子映射的键**保持用户写法**。HTTP 头名按 RFC 7230 只在
+// 接收方比较时大小写不敏感，接收方并不保证对"发出的头名"做规范化——部分 CDN /
+// WAF / 鉴权网关按精确大小写匹配。此前一律转小写会让配置的 `X-Api-Key` 变成
+// `x-api-key` 而被上游 401，且没有任何报错线索。
 func normalizeYAMLKeys(n *yaml.Node) {
 	switch n.Kind {
 	case yaml.MappingNode:
 		for i := 0; i < len(n.Content); i += 2 {
-			n.Content[i].Value = strings.ToLower(n.Content[i].Value)
+			keyNode := n.Content[i]
+			key := strings.ToLower(keyNode.Value)
+			keyNode.Value = key
+			// headers 的值是"头名 → 头值"映射：键名保持原样，不递归归一化
+			if key == "headers" {
+				continue
+			}
 			normalizeYAMLKeys(n.Content[i+1])
 		}
 	case yaml.SequenceNode:
