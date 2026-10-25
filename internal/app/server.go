@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,10 +33,11 @@ type Server struct {
 	httpSrv  *http.Server
 	svc      *service.RandomService // 业务服务（Shutdown 时停止仓库后台任务）
 
-	cacheCloser io.Closer  // 缓存连接（停止时关闭；Redis 客户端或内存缓存的清理协程）
-	limiterStop func()     // 限流器后台清理协程停止函数（nil=未启用）
+	cacheCloser io.Closer // 缓存连接（停止时关闭；Redis 客户端或内存缓存的清理协程）
+	limiterStop func()    // 限流器后台清理协程停止函数（nil=未启用）
 
-	running atomic.Bool
+	running     atomic.Bool
+	cleanupOnce sync.Once // 保证后台资源只释放一次：Start 失败后同样会走 Shutdown
 }
 
 // 日志系统的进程内初始化状态。
@@ -203,30 +205,44 @@ func (s *Server) Start() error {
 }
 
 // Shutdown 优雅停止服务（可重复调用）。
+//
+// 后台资源（限流协程、仓库任务、缓存连接）由 cleanup 无条件释放：
+// NewServer 在监听之前就已创建它们，Start 失败（如端口被占用）后调用方
+// 仍会调用 Shutdown 善后，只看 running 会直接返回而漏掉释放。
 func (s *Server) Shutdown(ctx context.Context) error {
-	if !s.running.Swap(false) {
-		return nil
+	wasRunning := s.running.Swap(false)
+	var shutdownErr error
+	if wasRunning {
+		logger.L.Info("shutting down server...")
+		// 顺序：先停 HTTP（等在途请求结束），再停后台任务与缓存。
+		// 反过来的话，正在处理的请求会用到已关闭的缓存/调度器而报错。
+		// 且无论 HTTP 是否超时，后台资源都必须关掉（否则缓存连接、协程泄漏）。
+		shutdownErr = s.httpSrv.Shutdown(ctx)
 	}
-	logger.L.Info("shutting down server...")
-	// 顺序：先停 HTTP（等在途请求结束），再停后台任务与缓存。
-	// 反过来的话，正在处理的请求会用到已关闭的缓存/调度器而报错。
-	// 且无论 HTTP 是否超时，后台资源都必须关掉（否则缓存连接、协程泄漏）。
-	shutdownErr := s.httpSrv.Shutdown(ctx)
-	if s.limiterStop != nil {
-		s.limiterStop()
-	}
-	if s.svc != nil {
-		s.svc.Close()
-	}
-	if s.cacheCloser != nil {
-		_ = s.cacheCloser.Close()
-	}
+	s.cleanup()
 	if shutdownErr != nil {
 		logger.L.Error("server forced to shutdown", "error", shutdownErr)
 		return shutdownErr
 	}
-	logger.L.Info("server exited")
+	if wasRunning {
+		logger.L.Info("server exited")
+	}
 	return nil
+}
+
+// cleanup 释放后台资源，重复调用只执行一次。
+func (s *Server) cleanup() {
+	s.cleanupOnce.Do(func() {
+		if s.limiterStop != nil {
+			s.limiterStop()
+		}
+		if s.svc != nil {
+			s.svc.Close()
+		}
+		if s.cacheCloser != nil {
+			_ = s.cacheCloser.Close()
+		}
+	})
 }
 
 // Running 返回服务是否正在监听。
@@ -246,16 +262,23 @@ func (s *Server) RebuildLocalIndex() error {
 // Port 返回当前配置的监听端口。
 func (s *Server) Port() int { return config.C.Port }
 
-// OpenHome 打开默认浏览器访问教程首页。静默失败：打不开浏览器不影响服务运行。
+// OpenHome 打开默认浏览器访问教程首页。
+//
+// 目前仅在 Windows 的服务器模式下被调用（见 cmd/server/main.go）。静默失败：没有可用浏览器、
+// 或 http 协议未注册处理器时只是不弹窗口，服务照常运行，调用方无需检查返回值。
 func OpenHome(port int) {
 	OpenURL(fmt.Sprintf("http://localhost:%d/", port))
 }
 
-// OpenURL 打开默认浏览器访问指定地址（跨平台；失败仅记 Debug 日志）。
+// OpenURL 打开默认浏览器访问指定地址（跨平台）。
+//
+// 用 cmd.Start 异步启动、不阻塞调用方；启动失败只记 Debug 日志（默认 LOG_LEVEL=info 下不可见），
+// 因为打不开浏览器属于可忽略的桌面体验问题，不应影响服务启动与运行。
 func OpenURL(rawURL string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
+		// 交给系统默认 http 处理器：装 Edge / Chrome / Firefox 均可，本程序不判断浏览器类型
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
 	case "darwin":
 		cmd = exec.Command("open", rawURL)

@@ -2,7 +2,7 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
-## [1.6.0] - 2026-10-23
+## [1.6.0] - 2026-10-25
 
 ### ⚠️ 升级注意（行为变化）
 
@@ -12,6 +12,11 @@
 - `source=local` 的错误码拆分为 `404`（文件不存在）/ `415`（类型不支持）/ `413`（超过 50MB），不再统一返回 `502`。按 502 配置的告警或重试规则需要调整。
 - 防盗链对根路径 `/` 的出图分支生效：以前把 `/random` 换成 `/` 即可绕过白名单，现在会被 403。若有页面以 `<img src="https://你的站点/">` 方式嵌入且来源不在白名单，升级后会变成裂图。
 - `.env` 解析更严格也更一致：空环境变量视为"未设置"（`APP_HOST=` 不再把服务暴露到 `0.0.0.0`）；成对引号会被剥掉；`image.yaml` 里的未知键会直接报错（此前静默忽略）。
+- `sync-redis` 改用**原始文件名**作 Redis 键（`Anime.txt` → `img:pc:Anime`，旧版写入的是小写化的 `img:pc:anime`）：升级后需**重跑一次 `sync-redis`**；重跑前，`Anime` 这类大小写变体分类会退化为文件回退路径（仍能出图，只是不走 Redis 加速）；文件名本来就是全小写的分类键不变、无需任何操作。
+- `/health` 的 `stats.circuit_trips` 改名为 `stats.circuit_rejected`（`checks.circuit_trips` 未变）：按旧字段名取数的监控会读不到值
+- `sync-redis` 退出码契约变更：**0 全成功 / 1 完全没有同步 / 2 部分成功**（旧版恒为 0）——依赖它判断结果的脚本会开始看到非零
+- `?category=` 含 Windows 非法字符（如 `*` `?` `|`）时由 500 改为 **400**（Linux 上原本是 404）：按 500 配置的告警或重试规则需要调整
+- 「手动 dispatch 构建镜像」的产出标签变了：`docker.yml` 改为推 `edge` + `sha-xxxx`，**不再推 `latest`**（`latest` 只由 release 工作流在最新 tag 时推进）；若脚本或 compose 依赖手动构建产出的 `latest`，需改指 `edge`
 
 ### 修复
 
@@ -37,16 +42,33 @@
 - GUI 读取 `.env` 的键匹配改为大小写不敏感，并剥离行内注释：此前 `.env` 里手写 `app_port=9090` 时主服务按 9090 运行、GUI 却显示 8080，点「保存并重启」会把端口改回去
 - GUI 的展示地址与「打开首页」跟随 `APP_HOST`（此前硬编码 `127.0.0.1`，改过监听地址后按钮指向无效地址）
 - `LOG_LEVEL` 值改为大小写不敏感并校验非法值（此前 `LOG_LEVEL=DEBUG` 会静默回落到 `info`）
+- GUI 反复「启动/停止」泄漏后台资源：端口被占用等启动失败场景下 GUI 虽然调了 `Shutdown`，但 `running` 从未置位、函数直接提前返回，限流清理协程、缓存清理协程与本地索引 cron 调度器一个都不释放，每点一次「启动」就漏一套；现在资源清理改由 `sync.Once` 保护并与「是否曾启动」解耦，`Shutdown` 无条件执行清理
+- `logger.Init` 重复调用只停后台协程、不关旧文件：GUI 每启停一次泄漏一个日志文件句柄，Windows 下旧日志无法删除或轮转；现在覆盖写入器前先关闭旧文件
+- Redis 命中后不再核对分类文件是否仍存在：删除或改名 `.txt` 分类后仍会继续出图（Redis 集合没有过期时间，等于永不失效），且单分类请求与多分类请求会给出相反结论；现在命中后核对文件，文件不存在即按「分类不存在」返回
+- 本地图库根目录瞬时不可见（网络盘掉线、`APP_ROOT` 配错）时会用空索引覆盖磁盘上有效的索引：现在区分「根目录不存在」（保留旧索引并限频告警）与「目录存在但无图片」（照常清空），`build-index` 相应改为报错并以非零退出
+- `/health` 的同一份响应里给出两个「已运行时长」（handler 创建时刻与统计起点，中间夹着启动预热），数值永久对不上；现在统一取统计起点
+- 分类名含 Windows 非法字符或控制字符时返回 500 并刷 ERROR 日志（仅 Windows），与 Linux 的 404 不一致；现在参数校验阶段直接返回 400
+- 首页示例 URL 硬编码 `http://`，HTTPS 反代部署下给出的地址粘到博客会被浏览器按混合内容拦掉；现在按 `r.TLS` 输出 `https://`
+- 上游图片超过 50MB 主动断连时，该请求既不计成功也不计失败、访问日志也不落盘（`total_requests` 与明细的差额又多一个来源）；现在统计与访问日志都改为 `defer` 收口
+- GUI 读取 `.env` 的行内注释规则与 `godotenv` 不一致：值里含无空格前置的 `#`（如 `REDIS_PASSWORD=pa#ss`）会被截断成 `pa`，GUI 保存一次就永久改写密码且无提示；现在与 `godotenv` 同语义（仅空白后的 `#` 视为注释）
+- `CIRCUIT_HALF_OPEN_MAX` 的非法值（`<=0`）回退到 1，而默认值与文档都是 3（填 `abc` 反而回退 3）：同一个非法值出现两种结果；现在统一回退 3
+- 本地索引的「分类不存在」负缓存每次写入都在全锁下全量扫 map（条目数无上限，key 由请求的 category 决定）；现在改为限频清理 + 容量淘汰，写入恢复为 O(1)
+- `/health` 免限流却每次现算健康检查（会 `stat` 目录，空图库时还要遍历整棵树）；现在 checks 结果加 5 秒短缓存
 
 ### 变更
 
 - Docker 镜像内置配置改为模板 `/app/.env.default`：容器首次启动用它生成 `config/.env`，之后不再覆盖；`.env.example` 明确标注为「面向有网关部署的推荐值」（`CORS_ENABLED` / `RATE_LIMIT_ENABLED` 为 `false`，而代码内置默认是 `true`）
 - 访问日志新增 `query` 字段（超长截断到 256 字节）：`/random` 的语义都在 query 里，此前只记 Path，出现 502 无法从日志判断是哪个 source/category/api
 - `.env.example` 的日志项说明移到值上一行（模板不再使用行内注释）
+- 分类名的大小写口径统一为「以磁盘原始文件名为准」：此前列分类清单时先把文件名转小写再回探，大小写敏感的文件系统（Linux/Docker）上 `Anime.txt` 能出图却永远不出现在分类清单、多分类请求里也会被过滤掉；Windows/macOS 行为不变
+- `stats.circuit_rejected` 的统计口径包含 `HALF_OPEN` 探测槽位耗尽的拒绝，并非每次都代表「刚熔断一次」
 
 ### 新增
 
 - **SIGHUP 按需重建本地索引**：`kill -HUP <pid>` 或 `docker compose kill -s HUP img-api` 立即重扫 `resources/local` 并更新索引，取代「exec build-index + 重启服务」两步流程；重建后分类快照立即失效（新分类无需等 30 秒）
+- 新增 `CONTRIBUTING.md`：约定「代码 / 注释 / 文档」三者的一致性规则与各文件只放什么（`README.md` 放入口与最常用配置、`docs/` 放对外契约、`private/` 放内部台账），并给出改动行为后同步文档与 `CHANGELOG.md` 的自查流程
+- `.env.example` 补充 `APP_ROOT` 与 `IMG_API_OPEN_BROWSER` 两项说明（注明只能作为进程环境变量设置、写进 `.env` 不生效）
+- 新增回归测试 20 余个，覆盖上面每条修复（含端口占用后的资源回收、Windows 下日志句柄释放、Redis 命中已删分类、根目录消失不清索引等场景）
 
 ### 优化
 
@@ -54,6 +76,10 @@
 - 图片输出恢复 `io.ReaderFrom` 快速路径：中间件包装器（`statusRecorder`/`recoveryWriter`）此前未透传该方法，`mode=image` 的代理与本地文件输出退化为 32KB 用户态缓冲拷贝；本地文件现可走 `sendfile` 零拷贝
 - 启动日志新增 `root` 与 `log_dir` 字段：根目录探测错误（发布版最常见的坑）可一眼确认
 - `.dockerignore` 补充 `/img-api-gui.exe`、`/setversion*` 与本地构建缓存目录（避免大文件进入构建上下文）
+- 仓库首次统一到 `gofmt` 规范：73 个受跟踪 Go 文件全部合规，其中 14 个只有空白对齐与注释缩进调整，无行为变化
+- CI 静态检查升级并钉死 `staticcheck@v0.8.2`（原 `v0.7.0` 自身 `go` 指令为 1.25.0，而本模块要求 1.26.0，兼容余量为 0），并在跑分析前打印实际版本，同时保证 CI 可复现
+- `docker.yml` 的 `latest` 标签移出该工作流（改推 `edge` 与 `sha-xxxx`）：此前手动 dispatch 无条件覆盖 `latest`，与 release 工作流的「仅最新 tag 才推进」守卫矛盾，一次误操作就能让所有用 compose 默认值拉取的部署静默降级
+- 删除无生产调用方的死代码 `RandomService.CategoryExists`（相关断言改写为 `CategoryExistsFor` 覆盖）；删除 `mode` 分支里与 `redirect` 逐字相同的不可达 `default`
 
 ## [1.5.0] - 2026-09-14
 

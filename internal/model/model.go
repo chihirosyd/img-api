@@ -146,7 +146,7 @@ type Image struct {
 // RandomResponse 是 mode=json 时的响应结构。
 // Data 使用 omitempty：出错时不展示 data 字段。
 type RandomResponse struct {
-	Code    int    `json:"code"`             // 业务状态码（200=成功）
-	Message string `json:"message"`          // 人类可读的消息
-	Data    *Image `json:"data,omitempty"`   // 图片元数据
+	Code    int    `json:"code"`           // 业务状态码（200=成功）
+	Message string `json:"message"`        // 人类可读的消息
+	Data    *Image `json:"data,omitempty"` // 图片元数据
 }

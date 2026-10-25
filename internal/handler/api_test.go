@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -334,5 +336,126 @@ func TestRandomLocalRedirectAutoDegrade(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), filepath.ToSlash(root)) {
 		t.Fatalf("local json leaked absolute root path: %q", w.Body.String())
+	}
+}
+
+// TestHomeScheme 回归 L-02：首页示例 URL 的 scheme 跟随实际连接协议，
+// 不再写死 http://。未终结 TLS 时不采信 X-Forwarded-Proto（防伪造）。
+func TestHomeScheme(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "resources", "txt", "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "default.txt"), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := service.NewStats()
+	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
+	h := NewAPIHandler(root, svc, stats)
+
+	// 直连（无 TLS）：即使带了 X-Forwarded-Proto 也只能是 http
+	w, r := newTestContext("")
+	r.URL.Path = "/"
+	r.Header.Set("Accept", "text/html")
+	r.Header.Set("X-Forwarded-Proto", "https")
+	h.Home(w, r)
+	body := w.Body.String()
+	if !strings.Contains(body, `src="http://example.com/random"`) {
+		t.Fatalf("plain http home body missing http:// example: status=%d", w.Code)
+	}
+	if strings.Contains(body, `src="https://example.com/random"`) {
+		t.Fatal("plain http home body leaked https:// example（X-Forwarded-Proto 不应被采信）")
+	}
+
+	// TLS 连接 → https://
+	w, r = newTestContext("")
+	r.URL.Path = "/"
+	r.Header.Set("Accept", "text/html")
+	r.TLS = &tls.ConnectionState{}
+	h.Home(w, r)
+	if !strings.Contains(w.Body.String(), `src="https://example.com/random"`) {
+		t.Fatalf("tls home body missing https:// example: status=%d", w.Code)
+	}
+}
+
+// TestRandomCategoryIllegalChars 回归 N-03：含 Windows 文件名非法字符、控制字符
+// 或首尾空白的分类名在参数校验阶段直接 400（此前会由 os.Stat 抛出非 ENOENT 错误
+// 落到 500 + ERROR 日志）。中文分类名必须继续被接受，因此不做 ASCII 白名单。
+func TestRandomCategoryIllegalChars(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "resources", "txt", "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "default.txt"), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := service.NewStats()
+	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
+	h := NewAPIHandler(root, svc, stats)
+
+	for _, category := range []string{
+		"a*b", "a?b", `a"b`, "a<b", "a>b", "a|b", "a:b",
+		"a\x00b", "a\tb", " a", "a ", "风景*",
+	} {
+		w, r := newTestContext("?source=txt&category=" + url.QueryEscape(category))
+		h.Random(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("category %q: status = %d, want 400", category, w.Code)
+			continue
+		}
+		if body := w.Body.String(); !strings.Contains(body, `"code":400`) {
+			t.Errorf("category %q: body = %q, want 与既有 400 一致的 JSON", category, body)
+		}
+	}
+
+	// 中文 / 逗号多选 / 允许的标点仍通过字符校验（不会得到 400）
+	for _, category := range []string{"风景", "anime,scenery", "分类-1_2"} {
+		w, r := newTestContext("?source=txt&mode=json&category=" + url.QueryEscape(category))
+		h.Random(w, r)
+		if w.Code == http.StatusBadRequest {
+			t.Errorf("category %q: status = 400, want 通过字符校验", category)
+		}
+	}
+}
+
+// TestRandomImageAbortRecordsFail 回归 L-03：超限中止（panic http.ErrAbortHandler）
+// 也必须记一次失败，否则这类请求在统计里凭空消失（RecordRequest 有、成功/失败都没有）。
+func TestRandomImageAbortRecordsFail(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "resources", "txt", "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "default.txt"), []byte("http://upstream.test/a.png\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldMax := maxProxyImageBytes
+	t.Cleanup(func() { maxProxyImageBytes = oldMax })
+	maxProxyImageBytes = 8
+	withFakeProxy(t, http.StatusOK, "image/png", strings.NewReader("0123456789abcdefghij"))
+
+	stats := service.NewStats()
+	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
+	h := NewAPIHandler(root, svc, stats)
+
+	w, r := newTestContext("?source=txt&mode=image")
+	func() {
+		defer func() {
+			if rec := recover(); rec != http.ErrAbortHandler {
+				t.Fatalf("recover = %v, want http.ErrAbortHandler", rec)
+			}
+		}()
+		h.Random(w, r)
+	}()
+
+	snap := stats.Snapshot()
+	if snap.TotalRequests != 1 || snap.TotalFail != 1 || snap.TotalSuccess != 0 {
+		t.Fatalf("stats requests=%d fail=%d success=%d, want 1/1/0",
+			snap.TotalRequests, snap.TotalFail, snap.TotalSuccess)
 	}
 }

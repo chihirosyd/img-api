@@ -88,11 +88,11 @@ func (s *Stats) RecordCircuitTrip() {
 func (s *Stats) Snapshot() StatsSnapshot {
 	s.rollDay()
 	return StatsSnapshot{
-		TotalRequests: s.totalRequests.Load(),
-		TotalSuccess:  s.totalSuccess.Load(),
-		TotalFail:     s.totalFail.Load(),
-		CircuitTrips:  s.circuitTrips.Load(),
-		UptimeSeconds: int64(time.Since(s.startTime).Seconds()),
+		TotalRequests:   s.totalRequests.Load(),
+		TotalSuccess:    s.totalSuccess.Load(),
+		TotalFail:       s.totalFail.Load(),
+		CircuitRejected: s.circuitTrips.Load(),
+		UptimeSeconds:   int64(time.Since(s.startTime).Seconds()),
 
 		TodayRequests: s.dayRequests.Load(),
 		TodaySuccess:  s.daySuccess.Load(),
@@ -104,11 +104,11 @@ func (s *Stats) Snapshot() StatsSnapshot {
 // StatsSnapshot 是一次统计快照，序列化为 JSON 返回给 /health。
 // total 系列自启动累计（重启归零）；today 系列按本地日期自动归零。
 type StatsSnapshot struct {
-	TotalRequests int64 `json:"total_requests"`
-	TotalSuccess  int64 `json:"total_success"`
-	TotalFail     int64 `json:"total_fail"`
-	CircuitTrips  int64 `json:"circuit_trips"`
-	UptimeSeconds int64 `json:"uptime_seconds"`
+	TotalRequests   int64 `json:"total_requests"`
+	TotalSuccess    int64 `json:"total_success"`
+	TotalFail       int64 `json:"total_fail"`
+	CircuitRejected int64 `json:"circuit_rejected"`
+	UptimeSeconds   int64 `json:"uptime_seconds"`
 
 	TodayRequests int64 `json:"today_requests"`
 	TodaySuccess  int64 `json:"today_success"`

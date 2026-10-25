@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -78,9 +79,12 @@ func TestSyncDeviceReplacesSetAtomically(t *testing.T) {
 	c := newFakeSetCache()
 	c.sets["img:pc:anime"] = []string{"https://old/x.jpg"}
 
-	n := syncDevice(context.Background(), c, dir, "pc")
-	if n != 2 {
-		t.Fatalf("total = %d, want 2", n)
+	st := syncDevice(context.Background(), c, dir, "pc")
+	if st.urls != 2 {
+		t.Fatalf("urls = %d, want 2", st.urls)
+	}
+	if st.failures != 0 {
+		t.Fatalf("failures = %d, want 0", st.failures)
 	}
 	got := c.sets["img:pc:anime"]
 	if len(got) != 2 || got[0] != "https://a/1.jpg" || got[1] != "https://a/2.jpg" {
@@ -147,5 +151,131 @@ func TestSyncDeviceSkipsCleanupWhenNoTxt(t *testing.T) {
 	_ = syncDevice(context.Background(), c, dir, "pc")
 	if _, ok := c.sets["img:pc:keep"]; !ok {
 		t.Fatal("-dir 指错时不得删除任何集合")
+	}
+}
+
+// TestSyncDeviceNoTxtReportsFailure 回归 L-04(b)+C-04：目录可读但一个 .txt 都没有时，
+// 既不能清理任何集合（"看不到分类"≠"分类已删光"），也不能静默成功——必须报告失败，
+// 让进程以非零退出码结束，否则孤儿键会一直留在 Redis 里且无人知晓。
+func TestSyncDeviceNoTxtReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	c := newFakeSetCache()
+	c.sets["img:pc:keep"] = []string{"https://old/x.jpg"}
+
+	st := syncDevice(context.Background(), c, dir, "pc")
+	if st.failures == 0 {
+		t.Fatal("没有任何 .txt 时应报告失败（退出码需要非零）")
+	}
+	if st.urls != 0 {
+		t.Fatalf("urls = %d, want 0", st.urls)
+	}
+	if _, ok := c.sets["img:pc:keep"]; !ok {
+		t.Fatal("没有任何 .txt 时不得删除任何集合")
+	}
+}
+
+// TestSyncDeviceUnreadableDirReportsFailure 目录本身读不到（-dir 指错、权限、挂载掉线）
+// 必须与"目录正常但没有 txt"一样报告失败，且绝不能删除数据（C-04）。
+func TestSyncDeviceUnreadableDirReportsFailure(t *testing.T) {
+	c := newFakeSetCache()
+	c.sets["img:pc:keep"] = []string{"https://old/x.jpg"}
+
+	st := syncDevice(context.Background(), c, filepath.Join(t.TempDir(), "missing"), "pc")
+	if st.failures == 0 {
+		t.Fatal("目录读不到时应报告失败（退出码需要非零）")
+	}
+	if _, ok := c.sets["img:pc:keep"]; !ok {
+		t.Fatal("目录读不到时不得删除任何集合")
+	}
+}
+
+// TestSyncDeviceUsesOriginalFileNameAsKey 回归 L-01(c)：Redis 键必须用原始文件名
+// （只去掉 .txt 后缀、不转小写），与主服务用请求原样分类名拼 key 的口径一致。
+func TestSyncDeviceUsesOriginalFileNameAsKey(t *testing.T) {
+	dir := t.TempDir()
+	writeTxt(t, dir, "Anime.txt", "https://a/1.jpg")
+	c := newFakeSetCache()
+
+	st := syncDevice(context.Background(), c, dir, "pc")
+	if st.urls != 1 || st.failures != 0 {
+		t.Fatalf("deviceSync = {urls:%d failures:%d}, want {1 0}", st.urls, st.failures)
+	}
+	if _, ok := c.sets["img:pc:Anime"]; !ok {
+		t.Fatalf("键必须使用原始文件名 img:pc:Anime，实际键: %v", c.sets)
+	}
+	if _, ok := c.sets["img:pc:anime"]; ok {
+		t.Fatal("不应再写入小写化后的键 img:pc:anime")
+	}
+}
+
+// TestSyncDeviceReportsPerCategoryFailure 一个分类成功 + 一个分类读取失败 =
+// 部分成功：urls>0 且 failures>0，汇总退出码为 2。
+func TestSyncDeviceReportsPerCategoryFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeTxt(t, dir, "anime.txt", "https://a/1.jpg")
+	writeTxt(t, dir, "broken.txt", "https://example.com/"+strings.Repeat("a", 1024*1024+10))
+	c := newFakeSetCache()
+
+	st := syncDevice(context.Background(), c, dir, "pc")
+	if st.urls != 1 || st.failures != 1 {
+		t.Fatalf("deviceSync = {urls:%d failures:%d}, want {1 1}", st.urls, st.failures)
+	}
+	code := runStats{urls: st.urls, failures: st.failures}.exitCode()
+	if code != exitPartial {
+		t.Fatalf("exitCode = %d, want %d（部分成功）", code, exitPartial)
+	}
+}
+
+// TestRunStatsExitCodes 覆盖 C-04 的退出码契约与汇总行口径（无需真实 Redis）。
+func TestRunStatsExitCodes(t *testing.T) {
+	cases := []struct {
+		name     string
+		st       runStats
+		wantCode int
+		wantIn   string // 汇总行必须包含
+		notIn    string // 汇总行不得包含
+	}{
+		{"全部成功", runStats{urls: 12}, exitOK, "🎉 同步完成", ""},
+		{"部分成功", runStats{urls: 5, failures: 1}, exitPartial, "部分成功", "🎉"},
+		{"全部失败", runStats{failures: 2}, exitFatal, "同步失败", "🎉"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.st.exitCode(); got != tc.wantCode {
+				t.Fatalf("exitCode = %d, want %d", got, tc.wantCode)
+			}
+			line := tc.st.summaryLine()
+			if !strings.Contains(line, tc.wantIn) {
+				t.Fatalf("汇总行 %q 应包含 %q", line, tc.wantIn)
+			}
+			if tc.notIn != "" && strings.Contains(line, tc.notIn) {
+				t.Fatalf("汇总行 %q 不应包含 %q", line, tc.notIn)
+			}
+		})
+	}
+}
+
+// TestRunHelpExitsZero -h 是主动查看用法，不属于失败。
+func TestRunHelpExitsZero(t *testing.T) {
+	t.Setenv("APP_ROOT", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-h"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("-h 应返回 0，实际 %d", code)
+	}
+}
+
+// TestRunReturnsNonZeroWhenRedisNotConfigured C-04：Redis 未配置必须返回非零退出码。
+// 旧实现提示后 os.Exit(0)，脚本/CI 无法感知"其实什么都没同步"。
+func TestRunReturnsNonZeroWhenRedisNotConfigured(t *testing.T) {
+	t.Setenv("APP_ROOT", t.TempDir()) // 隔离 .env 与日志目录，避免往仓库里写文件
+	t.Setenv("REDIS_ADDR", "")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-dir", t.TempDir()}, &stdout, &stderr)
+	if code != exitFatal {
+		t.Fatalf("Redis 未配置时退出码 = %d, want %d", code, exitFatal)
+	}
+	if !strings.Contains(stderr.String(), "Redis 未配置") {
+		t.Fatalf("stderr 未说明 Redis 未配置: %q", stderr.String())
 	}
 }

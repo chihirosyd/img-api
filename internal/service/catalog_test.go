@@ -39,34 +39,92 @@ func TestTxtCategoriesForDevice(t *testing.T) {
 	}
 }
 
-// TestTxtCategoriesUppercaseIgnored 回归 Z12：分类文件名统一按小写约定处理。
-// 仅在 Linux（大小写敏感文件系统）验证——Windows 上无法构造大小写并存场景。
-func TestTxtCategoriesUppercaseIgnored(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 文件系统大小写不敏感，无法构造大小写并存场景；由 Linux CI 覆盖")
+// TestTxtCategoriesKeepOriginalCase 回归 L-01：分类名按文件名的原始大小写探测与列举。
+// 读取侧（TxtRepository）用请求的原始名拼 "<分类>.txt" 打开文件，若这里先小写化，
+// 大小写敏感文件系统上 Anime.txt 会"能出图但分类清单里列不出来"。
+// 该场景在 Windows/macOS（大小写不敏感）上同样可构造，断言的是列举名的大小写。
+func TestTxtCategoriesKeepOriginalCase(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "Anime.txt"), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := txtCategoriesForDevice(root, "pc")
+	want := []string{"Anime"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("txtCategoriesForDevice = %v, want %v（分类名应保留原始大小写）", got, want)
+	}
+}
+
+// TestTxtCategoriesCaseDedupe 大小写并存时视为同一分类，只列一个且用原始名。
+// 依赖大小写敏感文件系统：Windows/macOS 上 Anime.txt 与 anime.txt 是同一个文件，
+// 无法在真实目录里并列；跨平台的去重断言见 TestTxtCategoriesCaseDedupeByFiles。
+func TestTxtCategoriesCaseDedupe(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		t.Skip("大小写不敏感文件系统无法构造 Anime.txt/anime.txt 并存；由 Linux CI 覆盖去重")
 	}
 	root := t.TempDir()
 	pc := filepath.Join(root, "pc")
 	if err := os.MkdirAll(pc, 0755); err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range []string{"Anime.txt", "anime.txt"} {
+		if err := os.WriteFile(filepath.Join(pc, name), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	// 仅大写文件：归一化后按小写名查找不到 → 不列入清单（与读取行为一致）
+	// ReadDir 按文件名排序，Anime.txt 在前 → 去重后保留先读到的原始名
+	got := txtCategoriesForDevice(root, "pc")
+	want := []string{"Anime"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("txtCategoriesForDevice = %v, want %v（并存只列一个且用原始名）", got, want)
+	}
+}
+
+// TestTxtCategoriesCaseDedupeByFiles 在文件清单层面断言去重（不依赖文件系统大小写）：
+// 两个大小写不同的名字指向同一分类时只列一次。Windows/macOS 上两个名字都指向
+// 同一个文件、探测都会命中，因此这里同样能覆盖去重分支。
+func TestTxtCategoriesCaseDedupeByFiles(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// 大小写不敏感文件系统上第二次写入落到同一个文件，不影响本用例的断言
+	for _, name := range []string{"Anime.txt", "anime.txt"} {
+		if err := os.WriteFile(filepath.Join(pc, name), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := txtCategoriesFromFiles(root, "pc", []string{"Anime.txt", "anime.txt"})
+	if !reflect.DeepEqual(got, []string{"Anime"}) {
+		t.Errorf("txtCategoriesFromFiles = %v, want [Anime]（大小写并存只列一个且用原始名）", got)
+	}
+}
+
+// TestTxtCategoriesUppercaseExtensionUnreadable 大写扩展名（.TXT）不在读取侧口径内：
+// 读取侧只拼 ".txt"，此类文件既取不到图也不应出现在清单里（大小写敏感文件系统）。
+func TestTxtCategoriesUppercaseExtensionUnreadable(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		t.Skip("大小写不敏感文件系统上 ANIME.TXT 可被 ANIME.txt 打开，与读取侧一致地列出")
+	}
+	root := t.TempDir()
+	pc := filepath.Join(root, "pc")
+	if err := os.MkdirAll(pc, 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(pc, "ANIME.TXT"), []byte("https://example.com/a.jpg\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if got := txtCategoriesForDevice(root, "pc"); len(got) != 0 {
-		t.Errorf("txtCategoriesForDevice = %v, want empty（仅大写文件不识别）", got)
-	}
 
-	// 大小写文件并存：归一化后是同一分类名 → 去重只列一次
-	if err := os.WriteFile(filepath.Join(pc, "anime.txt"), []byte("https://example.com/b.jpg\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	got := txtCategoriesForDevice(root, "pc")
-	want := []string{"anime"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("txtCategoriesForDevice = %v, want %v（大小写并存去重）", got, want)
+	if got := txtCategoriesForDevice(root, "pc"); len(got) != 0 {
+		t.Errorf("txtCategoriesForDevice = %v, want empty（读取侧打不开 ANIME.txt）", got)
 	}
 }
 
@@ -106,7 +164,7 @@ func TestLocalCategoriesForDevice(t *testing.T) {
 	}
 }
 
-// TestCategorySnapshotQueries 验证基于快照的 CategoryExists / CategoryExistsFor /
+// TestCategorySnapshotQueries 验证基于快照的 CategoryExistsFor /
 // AvailableCategories 语义（直接用结构体构造 RandomService，不依赖 config 初始化）。
 func TestCategorySnapshotQueries(t *testing.T) {
 	root := t.TempDir()
@@ -134,19 +192,17 @@ func TestCategorySnapshotQueries(t *testing.T) {
 
 	s := &RandomService{rootPath: root}
 
-	// 任一设备存在即 true
-	if !s.CategoryExists(model.SourceTxt, "anime") {
-		t.Error("CategoryExists(txt, anime) = false, want true")
+	// 分类完全不存在时对当前设备返回 false
+	if s.CategoryExistsFor(model.SourceTxt, "beauty", model.DevicePC) {
+		t.Error("CategoryExistsFor(txt, beauty, pc) = true, want false")
 	}
-	if !s.CategoryExists(model.SourceTxt, "scenery") {
-		t.Error("CategoryExists(txt, scenery) = false, want true")
+	// 多分类：任一分类对当前设备存在即 true
+	if !s.CategoryExistsFor(model.SourceTxt, "beauty,anime", model.DevicePC) {
+		t.Error("CategoryExistsFor(txt, beauty,anime, pc) = false, want true")
 	}
-	if s.CategoryExists(model.SourceTxt, "beauty") {
-		t.Error("CategoryExists(txt, beauty) = true, want false")
-	}
-	// 多分类：任一存在即 true
-	if !s.CategoryExists(model.SourceTxt, "beauty,anime") {
-		t.Error("CategoryExists(txt, beauty,anime) = false, want true")
+	// 多分类：全部不在当前设备目录时为 false（scenery 只在 pe）
+	if s.CategoryExistsFor(model.SourceTxt, "beauty,scenery", model.DevicePC) {
+		t.Error("CategoryExistsFor(txt, beauty,scenery, pc) = true, want false")
 	}
 
 	// 按设备精确判定：anime 只在 pc，pe 请求应返回 false

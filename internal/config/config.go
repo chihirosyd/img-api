@@ -50,9 +50,9 @@ func warnf(format string, args ...any) {
 type AppConfig struct {
 	Debug bool // true: 调试模式（错误附详细信息、提示页附可用列表、日志附源码位置）
 
-	Name string // 应用名称（用于日志标识）
-	Host string // HTTP 监听地址（0.0.0.0 表示监听所有网卡）
-	Port int    // HTTP 监听端口
+	Name    string // 应用名称（用于日志标识）
+	Host    string // HTTP 监听地址（0.0.0.0 表示监听所有网卡）
+	Port    int    // HTTP 监听端口
 	Version string // 语义版本号（影响 /health 返回和启动日志）
 
 	CorsEnabled      bool // 是否启用跨域响应头（<img> 嵌图无需跨域；Nginx 处理时可关闭）
@@ -138,9 +138,18 @@ func Load(rootPath string) error {
 		raw := strings.TrimSpace(getStr(key))
 		b, err := strconv.ParseBool(raw)
 		if err != nil {
-			// 非法值不再静默当作 false：RATE_LIMIT_ENABLED=yes 会静默关掉限流
+			// 与 getInt 同思路：非法值回退 defaults，而不是恒返回 false，
+			// 否则 RATE_LIMIT_ENABLED=yes 会静默把限流关掉（默认是 true）。
+			d, ok := defaults[key]
+			db, derr := strconv.ParseBool(d)
+			if ok && derr == nil {
+				if raw != "" {
+					warnf("%s=%q 不是合法布尔值（true/false），已回退默认值 %t", key, raw, db)
+				}
+				return db
+			}
 			if raw != "" {
-				warnf("%s=%q 不是合法布尔值（true/false），已按 false 处理", key, raw)
+				warnf("%s=%q 不是合法布尔值（true/false），已回退 false", key, raw)
 			}
 			return false
 		}
@@ -239,8 +248,10 @@ func Load(rootPath string) error {
 	if C.CircuitTimeoutSeconds <= 0 {
 		C.CircuitTimeoutSeconds = 30
 	}
+	// 回退值必须与 defaults 里的 "3" 一致：raw=abc 由 getInt 回退到默认 3，
+	// raw<=0 走这里；否则同一种"非法"会出现 3 与 1 两种结果。
 	if C.CircuitHalfOpenMax <= 0 {
-		C.CircuitHalfOpenMax = 1
+		C.CircuitHalfOpenMax = 3
 	}
 	// 端口范围校验：非法值（0 会绑定随机端口、>65535 启动失败）回退默认并明确告警，
 	// 避免"静默改端口"（此前 APP_PORT=abc 静默用 8080、=0 静默绑随机端口均无提示）
@@ -319,11 +330,11 @@ func parseWhitelist(raw string) []string {
 // .env 和环境变量都未设置时生效。
 var defaults = map[string]string{
 	// 默认关闭调试，避免公网部署暴露分类清单/详细错误
-	"APP_DEBUG": "false",
-	"APP_NAME":  "img-api",
-	"APP_HOST":  "0.0.0.0",
+	"APP_DEBUG":   "false",
+	"APP_NAME":    "img-api",
+	"APP_HOST":    "0.0.0.0",
 	"APP_VERSION": "1.6.0",
-	"APP_PORT":   "8080",
+	"APP_PORT":    "8080",
 
 	"CORS_ENABLED":       "true",
 	"RATE_LIMIT_ENABLED": "true",

@@ -174,7 +174,7 @@ func TestRandomTxtEndToEnd(t *testing.T) {
 	}
 
 	// 多分类全部不存在 → ErrCategoryNotSupported（404 提示页场景）。
-	// 注意：单分类不存在时错误产生于仓库层，由 handler 经 CategoryExists 判定，
+	// 注意：单分类不存在时错误产生于仓库层，由 handler 经 ErrNoImage / ErrCategoryNotSupported 判定，
 	// 服务层只在"多分类全部不可用"或"外部渠道白名单不匹配"时返回该哨兵。
 	_, err = s.Random(context.Background(), model.SourceTxt, "", "beauty,nature", model.DevicePC)
 	var cns *model.ErrCategoryNotSupported

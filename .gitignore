@@ -30,7 +30,6 @@ config/.env
 *.test
 # pprof 性能采样
 *.prof
-# scripts/check-all.bat 检查报告
 /check-report.txt
 # 本地构建缓存（GOCACHE / GOTMPDIR / GOMODCACHE 指到工作区时产生，
 # 沙箱或 CI 环境下常用这种写法，避免误提交数万个缓存文件）

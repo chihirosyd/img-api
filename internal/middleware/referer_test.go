@@ -16,14 +16,14 @@ func TestIsAllowed(t *testing.T) {
 		want    bool
 	}{
 		{"https://mysite.com/page", true},
-		{"https://www.mysite.com/", true},          // 子域名匹配
-		{"https://evilmysite.com/", false},          // 前缀拼接不能绕过
-		{"https://mysite.com.evil.com/", false},     // 后缀拼接不能绕过
-		{"https://blog.mysite.com/", true},          // 精确白名单项
+		{"https://www.mysite.com/", true},       // 子域名匹配
+		{"https://evilmysite.com/", false},      // 前缀拼接不能绕过
+		{"https://mysite.com.evil.com/", false}, // 后缀拼接不能绕过
+		{"https://blog.mysite.com/", true},      // 精确白名单项
 		{"https://other.com/", false},
-		{"http://mysite.com:8080/x", true},          // 端口不影响
+		{"http://mysite.com:8080/x", true}, // 端口不影响
 		{"not-a-valid-url", false},
-		{"MYSITE.COM", true},                        // 大小写不敏感
+		{"MYSITE.COM", true}, // 大小写不敏感
 	}
 
 	for _, c := range cases {
@@ -49,10 +49,10 @@ func TestRefererExemptsHomeAndHealth(t *testing.T) {
 		path string
 		want int
 	}{
-		{"/", http.StatusNoContent},        // 首页豁免
-		{"/health", http.StatusNoContent},  // 健康检查豁免
-		{"/random", http.StatusForbidden},  // 图片接口仍拦截
-		{"/other", http.StatusForbidden},   // 其它路径仍拦截
+		{"/", http.StatusNoContent},       // 首页豁免
+		{"/health", http.StatusNoContent}, // 健康检查豁免
+		{"/random", http.StatusForbidden}, // 图片接口仍拦截
+		{"/other", http.StatusForbidden},  // 其它路径仍拦截
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest("GET", c.path, nil)

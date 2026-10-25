@@ -106,7 +106,7 @@ func TestBreakerClampsInvalidParams(t *testing.T) {
 // TestBreakerConcurrentHalfOpenCap 并发半开探测不超 halfOpenMax：
 // 探测槽位在状态检查时原子占用，最多放行 halfOpenMax 个。
 func TestBreakerConcurrentHalfOpenCap(t *testing.T) {
-	b := NewBreaker(1, 0, 2) // timeout=0：断路后立即半开
+	b := NewBreaker(1, 0, 2)                               // timeout=0：断路后立即半开
 	_ = b.Call(func() error { return errors.New("boom") }) // 首次失败 → OPEN（预期错误）
 
 	var executed atomic.Int64

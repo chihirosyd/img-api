@@ -1,7 +1,7 @@
 package service
 
 // 本文件集中图库目录/分类的探测辅助函数，供提示页判定与分类清单快照使用
-// （SourceEmpty / CategoryExists / CategoryExistsFor / AvailableCategories）。
+// （SourceEmpty / CategoryExistsFor / AvailableCategories）。
 // 解析规则与 TxtRepository / LocalRepository 保持一致。
 
 import (
@@ -106,28 +106,39 @@ func txtCategoryExistsForDevice(root, device, category string) bool {
 }
 
 // txtCategoriesForDevice 列出指定设备目录下含有效 URL 的分类名（保持目录顺序）。
-// 内容校验与 txtCategoryExistsForDevice 一致：仅注释/空文件不算存在。
+// 分类名保留文件名的原始大小写：读取侧按请求的原始名拼 "<分类>.txt" 打开文件，
+// 归一化成小写会让大小写敏感文件系统上的 Anime.txt 探测不到
+// （能出图，但分类清单里列不出来、多分类也会被过滤掉）。
 func txtCategoriesForDevice(root, device string) []string {
 	entries, err := os.ReadDir(filepath.Join(root, device))
 	if err != nil {
 		return nil
 	}
-	var result []string
-	seen := make(map[string]bool)
+	files := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".txt") {
 			continue
 		}
-		// 分类文件名统一按小写处理：英文字母归一化为小写（避免 ANIME.TXT 与
-		// anime.txt 被视为不同分类）；中文无大小写，ToLower 原样保留
-		name := strings.TrimSuffix(strings.ToLower(e.Name()), ".txt")
-		// 去重：Linux 大小写敏感文件系统上 ANIME.TXT 与 anime.txt 可并存，
-		// 归一化后是同一分类名，只列一次
-		if seen[name] {
+		files = append(files, e.Name())
+	}
+	return txtCategoriesFromFiles(root, device, files)
+}
+
+// txtCategoriesFromFiles 从文件名列表（已按目录顺序）筛出含有效 URL 的分类名。
+// 探测与列举都用去掉 .txt 后缀的原始名（后缀大小写不敏感，与调用方的过滤一致），
+// 小写名只作为去重键：ANIME.TXT 与 anime.txt 是同一分类，只列一次。
+// 内容校验与 txtCategoryExistsForDevice 一致：仅注释/空文件不算存在。
+func txtCategoriesFromFiles(root, device string, files []string) []string {
+	var result []string
+	seen := make(map[string]bool, len(files))
+	for _, file := range files {
+		name := file[:len(file)-len(".txt")]
+		key := strings.ToLower(name)
+		if seen[key] {
 			continue
 		}
 		if txtCategoryExistsForDevice(root, device, name) {
-			seen[name] = true
+			seen[key] = true
 			result = append(result, name)
 		}
 	}

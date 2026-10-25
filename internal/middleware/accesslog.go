@@ -66,17 +66,20 @@ func AccessLog() Middleware {
 
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			// 落在 defer 里：超限出图时 handler 会 panic(http.ErrAbortHandler) 主动断连，
+			// 顺序执行路径会被 panic 跳过，这类请求在访问日志中完全消失。
+			defer func() {
+				logger.L.Info("access",
+					"request_id", RequestIDFrom(r.Context()),
+					"method", r.Method,
+					"path", r.URL.Path,
+					"query", truncateQuery(r.URL.RawQuery),
+					"status", rec.status,
+					"latency_ms", time.Since(start).Milliseconds(),
+					"ip", realClientIP(r, trusted),
+				)
+			}()
 			next.ServeHTTP(rec, r)
-
-			logger.L.Info("access",
-				"request_id", RequestIDFrom(r.Context()),
-				"method", r.Method,
-				"path", r.URL.Path,
-				"query", truncateQuery(r.URL.RawQuery),
-				"status", rec.status,
-				"latency_ms", time.Since(start).Milliseconds(),
-				"ip", realClientIP(r, trusted),
-			)
 		})
 	}
 }

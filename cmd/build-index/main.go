@@ -28,6 +28,13 @@ func main() {
 
 	fmt.Println("🔍 Scanning:", localDir)
 
+	// 根目录不存在（路径配错、网络盘瞬时不可见）时扫描结果为空，写盘会覆盖掉
+	// 可能是有效的索引：既不写盘，也不声称构建成功。
+	if _, err := os.Stat(localDir); err != nil && os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "❌ local images root not found: %s (index left untouched)\n", localDir)
+		os.Exit(1)
+	}
+
 	// 与主服务自动索引共用的扫描逻辑（key: "pc/default", value: [filepaths]）
 	images, err := repository.ScanLocalImages(localDir)
 	if err != nil {

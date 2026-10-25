@@ -42,6 +42,8 @@ func main() {
 	// ── Windows 桌面体验：双击运行的普通用户不了解命令行，
 	// 控制台打印友好横幅，并自动打开默认浏览器到教程首页（含运行状态仪表盘），
 	// 即可直观确认服务是否正常。自动打开可用环境变量 IMG_API_OPEN_BROWSER=0 关闭。
+	// 打开浏览器是异步且静默失败的：机器上没有可用浏览器 / http 协议未注册处理器时只是不弹窗口
+	// （个别情况下由 Windows 自己弹提示），服务不受影响，手动访问横幅打印的地址即可。
 	if runtime.GOOS == "windows" {
 		printWindowsBanner(srv.Port())
 		if os.Getenv("IMG_API_OPEN_BROWSER") != "0" {
@@ -87,5 +89,3 @@ func printWindowsBanner(port int) {
 	fmt.Println("  ⚠️  关闭此窗口将停止服务")
 	fmt.Println()
 }
-
-

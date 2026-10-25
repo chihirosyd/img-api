@@ -9,6 +9,13 @@
 所有配置通过项目根目录的 `.env` 文件管理（外部 API 池配置在 `config/image.yaml`，
 见下方章节）。首次使用时复制 `.env.example` 为 `.env` 并修改。
 
+> 🐳 **Docker 例外**：容器里的程序同样读 `/app/.env`，但那个文件不由用户维护——
+> `docker/entrypoint.sh` 每次启动都用 `/app/config/.env` 覆盖它；若 `config/.env` 不存在，
+> 首次启动会先用镜像内置模板 `/app/.env.default` 生成一份。所以**容器部署要改的是宿主机
+> 挂载目录里的 `config/.env`**（别再把 `.env` 单独挂到 `/app/.env`，会被覆盖而"改了不生效"），
+> 只有二进制部署才直接用项目根的 `.env`。详见 docs/DEPLOY.md 的「手动构建（不使用远程镜像）」
+> 及其下方的配置来源说明。
+
 > ⚠️ 修改 `.env` 后需**重启服务**生效（Docker 部署执行 `docker compose restart`，
 > 需在 `docker-compose.yml` 所在目录执行，否则报 `no configuration file provided`）。
 
@@ -38,6 +45,22 @@
 | `APP_NAME` | string | `img-api` | 应用名称（日志标识） |
 | `APP_HOST` | string | `0.0.0.0` | 监听地址（`0.0.0.0` 监听所有网卡） |
 | `APP_PORT` | int | `8080` | 应用监听端口（Docker 部署时指容器内端口，改端口需同步 compose 端口映射右侧） |
+
+> 📁 **`APP_ROOT`（项目根目录，全平台生效，只能作为进程环境变量）**：决定 `.env`、`resources/`、`storage/` 的定位
+> （读配置、扫图库、写日志与本地索引都相对它）。优先级：`APP_ROOT` → 可执行文件所在目录（该目录下含
+> `resources/` 才认作根目录）→ 当前工作目录。它**不能写进 `.env`**：`.env` 自身就在 `APP_ROOT/.env`，
+> 先有根目录才谈读配置。Docker 部署已由 `docker-compose.yml` 设置 `APP_ROOT=/app`；二进制部署仅在
+> "exe 与 `config/`、`resources/` 不同目录"或"从其他工作目录启动（systemd、开机自启）"时需显式设置。
+
+> 🖥️ **`IMG_API_OPEN_BROWSER`（仅 Windows 生效，只能作为进程环境变量）**：双击 `img-api.exe` 启动时是否自动
+> 打开默认浏览器到首页（方便普通用户直观确认服务是否正常）。`0` = 不打开；不设置或其它值 = 打开。
+> Linux / macOS / Docker 下该变量**无任何作用** —— 服务器模式下只有 Windows 会执行打开浏览器的逻辑。
+> 设置方式：Windows 的 `set` / `setx` 或「系统属性 → 环境变量」面板（写进 `.env` 不生效）。
+>
+> 📌 打开浏览器是**异步且静默失败**的：走 Windows 的系统默认 http 处理器（`rundll32 url.dll,FileProtocolHandler`），
+> 所以装 Edge / Chrome / Firefox 都行，程序不关心具体是哪个。**万一机器上没有可用浏览器、或 http 协议没有
+> 注册处理器**，结果只是不弹窗口（个别情况下由 Windows 自己弹一个「没有可打开此链接的应用」提示）——
+> **服务照常运行**，手动访问 `http://localhost:<端口>/` 即可；该失败仅记一条 Debug 日志，`LOG_LEVEL=info` 时看不到。
 
 ---
 
@@ -151,7 +174,7 @@
 | `url` | string | 是 | 请求模板，支持 `{width}` `{height}` `{category}` 占位符 |
 | `response_type` | string | — | `redirect`（默认）/ `json`：描述**上游 API 怎么返回图片**（302 重定向 / JSON 里嵌 URL）。注意与请求参数 `mode`（最终怎么把图给访客）无关——`mode=image`（服务端代理直出）在两种 `response_type` 下都可用 |
 | `url_field` | string | — | JSON 模式时提取 URL 的字段路径（如 `urls.raw`） |
-| `categories` | []string | — | 支持的分类列表，空=匹配所有 |
+| `categories` | []string | — | 支持的分类列表，空或显式写 `["all"]` 都表示匹配所有分类（`config/image.yaml` 的示例用的就是 `["all"]`） |
 | `default_category` | []string | — | 默认分类（多值随机选一）；空=不传分类（`{category}` 占位符置空、不加 `category_param`，避免上游收到字面 `default`） |
 | `category_param` | string | — | 分类对应的 query 参数名（如 `query`） |
 | `headers` | map | — | 自定义请求头（如 `Authorization`）。**头名按你写的原样使用**（不会被转成小写，兼容大小写敏感的鉴权网关）；未显式配置 `User-Agent` 时按设备类型自动注入 |
@@ -167,8 +190,10 @@
 > 且不计入熔断器失败次数。
 
 > ⚠️ 如果 `external_apis` 列表为空（未配置任何端点），
-> 访问 `source=external` 会返回 HTTP 503 的"开始使用"引导页（`mode=json` 时返回 JSON，
-> 博客 `<img>` 嵌入时返回 SVG 提示图），指导管理员在 `config/image.yaml` 中添加端点。
+> 访问 `source=external` 会返回"开始使用"引导页：浏览器直接访问为 HTTP 503 的 HTML 页，
+> `mode=json` 时返回 503 JSON，博客 `<img>` 嵌入时返回 **HTTP 200** 的 SVG 提示图
+> （`<img>` 对非 2xx 响应不渲染内容、只会显示裂图，故 SVG 分支刻意用 200），
+> 指导管理员在 `config/image.yaml` 中添加端点。
 
 ---
 

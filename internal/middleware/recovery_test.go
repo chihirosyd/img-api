@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 }
 
 // TestRecoveryReturnsJSON 回归 Z11：panic 恢复后的响应必须是 JSON 契约
-//（此前 http.Error 输出 text/plain + 换行，与 API 契约不一致）。
+// （此前 http.Error 输出 text/plain + 换行，与 API 契约不一致）。
 func TestRecoveryReturnsJSON(t *testing.T) {
 	h := Recovery()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")

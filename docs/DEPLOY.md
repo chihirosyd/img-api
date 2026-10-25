@@ -113,6 +113,9 @@ systemctl restart img-api         # 修改 .env 后重启
 #   - 后台运行（关闭窗口时最小化到托盘，服务继续运行）
 ```
 
+> 📌 `img-api-gui.exe -background`（等价 `--background`）：启动即隐藏窗口、直接最小化到托盘
+> 继续后台运行——控制面板的「开机自启」正是用该参数注册的，也可自行放进启动项。
+
 > ⚠️ 若直接删除程序目录而未先在控制面板**关闭「开机自启」开关**，注册表会残留
 > 指向不存在 exe 的开机自启项。可手动清理：删除注册表
 > `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `img-api-gui` 值
@@ -242,6 +245,17 @@ docker compose up -d
 docker compose exec img-api /app/sync-redis
 ```
 
+`sync-redis` 的退出码（可用于脚本串联判断）：
+
+- `0` = 所有设备目录扫描成功，且每个分类都写入成功（`-h` / `--help` 也是 `0`）
+- `1` = 完全没有同步：配置加载失败、`REDIS_ADDR` 为空、Redis 连接失败、flag 解析错误、设备目录读不到且一个分类都没成功
+- `2` = 部分成功：至少一个分类写入成功，但同时存在失败项
+
+因此 `docker compose exec img-api /app/sync-redis && …` 里的 `&&` 现在能真正反映成败。
+
+> 📌 `-dir` 指定 TXT 图库根目录（默认 `resources/txt`）：相对值按程序根目录（exe 所在目录或
+> `APP_ROOT`）解析，绝对路径原样使用，例如 `./sync-redis -dir /data/txt`。
+
 ### 手动构建（不使用远程镜像）
 
 ```bash
@@ -338,7 +352,9 @@ curl http://localhost:8080/health
 > 重建容器后配置与图库原样保留。
 >
 > 📌 固定版本升级：把 compose 里 `image: ghcr.io/chihirosyd/img-api:latest`
-> 改为 `:1.2.0`（替换版本号即可；注意镜像 tag 不带 `v` 前缀）；`latest` 则始终跟随最新发布。
+> 改为 `:1.2.0`（替换版本号即可；注意镜像 tag 不带 `v` 前缀）。
+> `latest` 只由 release 工作流在「当前 tag 是最新 semver」时推进（补推旧 tag 不会把
+> `latest` 往回挪）；`docker.yml` 的手动构建只产出 `edge` 与 `sha-xxxx` 标签，不碰 `latest`。
 
 ### 二进制部署（Linux / macOS / Windows）
 
@@ -491,3 +507,4 @@ zip 内容：
 | `502` 反复出现 | 外部图床不可用、返回非图片内容、或图片超过 50MB | 查日志 `upstream image fetch failed` 的 `status`；换 API 或调小图 |
 | Docker 里放不进图片（`Permission denied`） | `resources/` 是 Docker 以 root 创建的 | `sudo chown -R $(id -u):$(id -g) resources/`（详见 [二进制部署](#二进制部署) 的目录说明） |
 | 改了 `.env` 但不生效 | 没有重启服务 | `docker compose restart`；只有 TXT/图片内容类改动不需要重启（见 CONFIG.md「变更生效时机」） |
+| 双击 `img-api.exe` 后没弹出浏览器 | 机器上没有可用的默认浏览器，或 http 协议未注册处理器；自动打开浏览器本身是**静默失败**的，与服务无关 | 手动访问控制台横幅打印的地址（默认 `http://localhost:8080/`）；不需要它自动打开时可设 `IMG_API_OPEN_BROWSER=0` |

@@ -2,9 +2,11 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"img-api/internal/config"
@@ -15,17 +17,19 @@ import (
 // HealthHandler 处理健康检查请求。
 // 提供各仓库、熔断器、缓存的状态以及运行时统计。
 type HealthHandler struct {
-	svc     *service.RandomService // 用于获取各仓库健康状态
-	stats   *service.Stats         // 运行时统计
-	startAt time.Time              // handler 创建时间（近似等于服务启动时间）
+	svc   *service.RandomService // 用于获取各仓库健康状态
+	stats *service.Stats         // 运行时统计
+
+	checksMu    sync.Mutex        // 保护下面两个字段
+	checksCache map[string]string // 缓存的 checks 结果
+	checksAt    time.Time         // 缓存写入时刻
 }
 
 // NewHealthHandler 创建健康检查处理器。
 func NewHealthHandler(svc *service.RandomService, stats *service.Stats) *HealthHandler {
 	return &HealthHandler{
-		svc:     svc,
-		stats:   stats,
-		startAt: time.Now(),
+		svc:   svc,
+		stats: stats,
 	}
 }
 
@@ -49,10 +53,16 @@ const (
 	healthHealthy = "healthy"
 )
 
+// healthCacheTTL 是 /health 中 checks 结果的缓存时长。
+//
+// 仓库健康检查要 os.Stat / os.ReadDir，空图库时还会遍历整棵目录树，而 /health
+// 免限流、可能被高频轮询。5 秒足以合并掉轮询带来的重复扫描，又把「刚恢复仍报
+// unhealthy」的滞后限制在 5 秒内（Docker healthcheck 与常见监控轮询间隔都在 10s 级）。
+const healthCacheTTL = 5 * time.Second
+
 // fullHealth 返回完整内部状态。
 func (h *HealthHandler) fullHealth(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	checks := h.svc.Health(ctx)
+	checks := h.checks(r.Context())
 
 	// 只对"已配置内容"的图源做健康判定：
 	//   - 未初始化的图源（checks 里没有这个键）→ 信息性状态，不参与判定；
@@ -80,8 +90,9 @@ func (h *HealthHandler) fullHealth(w http.ResponseWriter, r *http.Request) {
 		status = "degraded"
 	}
 
-	uptime := formatDuration(time.Since(h.startAt))
+	// uptime 与 stats.uptime_seconds 同源，同一响应里的两个运行时长才不会互相矛盾
 	snapshot := h.stats.Snapshot()
+	uptime := formatDuration(time.Duration(snapshot.UptimeSeconds) * time.Second)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  status,
@@ -90,6 +101,20 @@ func (h *HealthHandler) fullHealth(w http.ResponseWriter, r *http.Request) {
 		"checks":  checks,
 		"stats":   snapshot,
 	})
+}
+
+// checks 返回各图源健康状态（带 healthCacheTTL 短缓存）。
+//
+// 持锁取数：缓存过期时只有一个请求真正穿透到磁盘扫描，其余请求排队后复用同一份结果。
+func (h *HealthHandler) checks(ctx context.Context) map[string]string {
+	h.checksMu.Lock()
+	defer h.checksMu.Unlock()
+	if h.checksCache != nil && time.Since(h.checksAt) < healthCacheTTL {
+		return h.checksCache
+	}
+	h.checksCache = h.svc.Health(ctx)
+	h.checksAt = time.Now()
+	return h.checksCache
 }
 
 // durUnit 是时长单位（名称 + 该单位的秒数）。

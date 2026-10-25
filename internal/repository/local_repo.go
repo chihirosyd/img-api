@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +23,8 @@ import (
 // LocalRepository 基于本地磁盘文件的图片仓库。
 //
 // 目录约定：
-//   resources/local/{pc|pe}/{category}/
+//
+//	resources/local/{pc|pe}/{category}/
 //
 // 索引机制（storage/index/local.json）：
 //   - 首次创建仓库时，若索引文件不存在则自动扫描目录生成（仅这一次）
@@ -31,14 +34,15 @@ import (
 //     （兼容刚放入、尚未被索引收录的新分类）
 //
 // 示例：
-//   resources/local/pc/default/
-//     sunset.jpg
-//     mountain.png
+//
+//	resources/local/pc/default/
+//	  sunset.jpg
+//	  mountain.png
 type LocalRepository struct {
 	rootPath  string // 本地图片根目录（如 resources/local）
 	indexFile string // 索引文件路径（如 storage/index/local.json）
 
-	mu     sync.RWMutex       // 保护 images
+	mu     sync.RWMutex        // 保护 images
 	images map[string][]string // 内存索引：key "pc/default" → 绝对路径列表
 
 	cron *cron.Cron // 索引自动刷新调度器（nil = 未启用；Stop 时关闭）
@@ -49,13 +53,27 @@ type LocalRepository struct {
 	negMu sync.Mutex
 	negAt map[string]time.Time
 
+	// negSwept 上次全量清理时间（清理限频），negSweeps 全量清理次数（仅测试观测），
+	// 均由 negMu 保护。
+	negSwept  time.Time
+	negSweeps int
+
 	// refreshMu 串行化索引重建：cron 定时刷新与 SIGHUP 手动重建可能并发，
 	// 交错执行会出现"内存=A、磁盘=B"的不一致（重启后加载到另一份索引）。
 	refreshMu sync.Mutex
+
+	// rootMissingWarnAt 上次"根目录不可见"告警时间：刷新可能每 30s 一次，
+	// 同样的告警需要限频（refreshMu 保护）。
+	rootMissingWarnAt time.Time
 }
 
 // negCacheTTL 是负缓存的有效时长。
 const negCacheTTL = 30 * time.Second
+
+// negSweepThreshold 控制负缓存全量清理的触发时机：常规写入只做 map 赋值，
+// 仅当条目数超过它或距上次清理满一个 TTL 时才全扫一次（key 来自用户传入的
+// category，每次写入都全扫会随条目数退化成 O(n)）。
+const negSweepThreshold = 1024
 
 // NewLocalRepository 创建本地文件仓库并立即加载或生成索引。
 //
@@ -178,16 +196,50 @@ func (r *LocalRepository) negativeRecently(key string) bool {
 	return true
 }
 
-// rememberNegative 记录"目录不存在"判定，并顺手清理过期条目（限制 map 增长）。
+// rememberNegative 记录"目录不存在"判定。
+//
+// 清理不是每次写入都做：key 由用户传入的 category 决定，常规写入只做一次 map
+// 赋值；仅当距上次清理满一个 TTL，或条目数超过 negSweepThreshold 时才全扫一次，
+// 必要时再清退最旧的一批，保证锁内扫描次数与写入次数脱钩。
 func (r *LocalRepository) rememberNegative(key string) {
 	r.negMu.Lock()
 	defer r.negMu.Unlock()
 	now := time.Now()
 	r.negAt[key] = now
+
+	if now.Sub(r.negSwept) < negCacheTTL && len(r.negAt) <= negSweepThreshold {
+		return
+	}
+	r.sweepNegLocked(now)
+	if len(r.negAt) > negSweepThreshold {
+		r.trimNegLocked(negSweepThreshold / 2)
+	}
+}
+
+// sweepNegLocked 清除已过期条目并记录清理时间（调用方须持有 negMu）。
+func (r *LocalRepository) sweepNegLocked(now time.Time) {
 	for k, at := range r.negAt {
 		if now.Sub(at) >= negCacheTTL {
 			delete(r.negAt, k)
 		}
+	}
+	r.negSwept = now
+	r.negSweeps++
+}
+
+// trimNegLocked 把条目数压到 target，淘汰最旧的一批（调用方须持有 negMu）。
+// 丢失负缓存只会让该分类多扫一次目录，不改变对外可见的 TTL 语义。
+func (r *LocalRepository) trimNegLocked(target int) {
+	keys := make([]string, 0, len(r.negAt))
+	for k := range r.negAt {
+		keys = append(keys, k)
+	}
+	if len(keys) <= target {
+		return
+	}
+	sort.Slice(keys, func(i, j int) bool { return r.negAt[keys[i]].Before(r.negAt[keys[j]]) })
+	for _, k := range keys[:len(keys)-target] {
+		delete(r.negAt, k)
 	}
 }
 
@@ -256,7 +308,25 @@ func (r *LocalRepository) loadIndex() error {
 //   - 其他扫描错误（权限、IO 故障等）→ 记录首个错误并返回，调用方应保留旧索引，
 //     避免用不完整/空索引覆盖磁盘上有效的 local.json
 func ScanLocalImages(rootPath string) (map[string][]string, error) {
+	images, _, err := scanLocalImages(rootPath)
+	return images, err
+}
+
+// scanLocalImages 是 ScanLocalImages 的实现，额外返回"根目录当前不可见"标记：
+// 调用方据此区分"根目录缺失"（网络盘瞬时掉线、路径配错）与"根目录存在但没有
+// 任何图片"——前者的空扫描结果不可信，不能用来覆盖有效索引。
+func scanLocalImages(rootPath string) (map[string][]string, bool, error) {
 	images := make(map[string][]string)
+
+	// 根目录单独判定：WalkDir 会把根上的错误混进子目录错误里回调，
+	// 分不清是"根目录不在"还是"扫描途中某个子目录消失"
+	if _, err := os.Stat(rootPath); err != nil {
+		if os.IsNotExist(err) {
+			return images, true, nil
+		}
+		return images, false, err
+	}
+
 	var firstErr error
 
 	_ = filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
@@ -292,7 +362,7 @@ func ScanLocalImages(rootPath string) (map[string][]string, error) {
 		return nil
 	})
 
-	return images, firstErr
+	return images, false, firstErr
 }
 
 // RebuildIndex 立即重建索引（扫描磁盘 + 原子写回 local.json + 更新内存索引）。
@@ -305,18 +375,28 @@ func (r *LocalRepository) RebuildIndex() error {
 }
 
 // refreshIndex 扫描整个 local 目录，更新内存索引并写回 local.json。
-// 扫描出错时保留旧索引（内存+磁盘），返回错误；目录不存在时生成空索引
-// （不报错），使首次启动也能正常创建文件。
+// 扫描出错、或根目录当前不可见且已有非空索引时保留旧索引（内存+磁盘）并返回
+// 错误；当前索引本身为空时即使根目录不存在也生成空索引（不报错），
+// 使首次启动也能正常创建文件。
 func (r *LocalRepository) refreshIndex() error {
 	// 串行化：cron 刷新与 SIGHUP 重建并发时，避免"内存=A、磁盘=B"的错配
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 
-	images, scanErr := ScanLocalImages(r.rootPath)
+	images, rootMissing, scanErr := scanLocalImages(r.rootPath)
 	if scanErr != nil {
 		// 扫描失败（目录瞬时不可读等）：保留旧索引，不覆盖磁盘上有效的 local.json
 		logger.L.Warn("local index scan failed, keeping existing index", "error", scanErr)
 		return fmt.Errorf("scan local images: %w", scanErr)
+	}
+
+	// 根目录不存在（网络盘瞬时掉线、路径配错）与"根目录存在但没有图片"是两种语义：
+	// 前者扫出的空结果不可信，内存里已有非空索引时保留旧索引（不覆盖内存、不落盘），
+	// 否则一次掉线就会把有效索引清空；当前索引本身为空时仍照常落盘，
+	// 避免首次启动（根目录尚未创建）永远建不出索引。
+	if rootMissing && len(images) == 0 && r.hasIndex() {
+		r.warnRootMissing()
+		return fmt.Errorf("scan local images: %w", errLocalRootMissing)
 	}
 
 	// 更新内存索引
@@ -332,6 +412,31 @@ func (r *LocalRepository) refreshIndex() error {
 
 	logger.L.Info("local index refreshed", "categories", len(images))
 	return nil
+}
+
+// errLocalRootMissing 表示本地图片根目录当前不可见（不存在 / 网络盘掉线）：
+// 此时扫描结果为空但不可信，refreshIndex 保留旧索引而不是用它覆盖。
+var errLocalRootMissing = errors.New("local images root missing")
+
+// rootMissingWarnInterval 是"根目录不可见"告警的最小间隔：
+// 索引刷新可能每 30s 一次，同样的告警限频输出。
+const rootMissingWarnInterval = 5 * time.Minute
+
+// hasIndex 判断内存中是否已有非空索引。
+func (r *LocalRepository) hasIndex() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.images) > 0
+}
+
+// warnRootMissing 提示根目录当前不可见（调用方须持有 refreshMu）。
+func (r *LocalRepository) warnRootMissing() {
+	now := time.Now()
+	if !r.rootMissingWarnAt.IsZero() && now.Sub(r.rootMissingWarnAt) < rootMissingWarnInterval {
+		return
+	}
+	r.rootMissingWarnAt = now
+	logger.L.Warn("local images root not visible, keeping existing index", "root", r.rootPath)
 }
 
 // WriteLocalIndex 将分类索引原子写入指定文件（JSON，键按字典序），

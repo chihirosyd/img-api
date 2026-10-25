@@ -5,7 +5,8 @@
 # 避免测试失败时镜像仍被发布、latest 被挪动。
 # 本工作流仅保留两种场景：
 #   - PR：验证 Dockerfile 能正常构建（不推送）
-#   - workflow_dispatch：手动触发构建并推送（人工确认，不走 tag 门禁）
+#   - workflow_dispatch：手动触发构建并推送 sha 与 edge 标签（人工确认，不走 tag 门禁）；
+#     latest 只由 release.yml 在 v* tag 且经校验为最新 tag 时推进
 name: Build Docker Image (PR verify / manual)
 
 on:
@@ -47,13 +48,14 @@ jobs:
           images: ghcr.io/chihirosyd/img-api
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=latest
+            type=sha
+            type=raw,value=edge,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
-          # PR 仅验证能否构建；workflow_dispatch 手动推送（人工确认）
+          # PR 仅验证能否构建；workflow_dispatch 手动推送 sha / edge（人工确认）；latest 不经本工作流
           push: ${{ github.event_name == 'workflow_dispatch' }}
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}

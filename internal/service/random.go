@@ -36,10 +36,10 @@ type RandomService struct {
 	rootPath     string
 
 	// 图源空置检查的短时缓存（30s），避免错误请求风暴时频繁扫描文件系统
-	emptyCheckAt   time.Time // 上次检查时间
+	emptyCheckAt   time.Time                 // 上次检查时间
 	sourceEmptyMap map[model.SourceType]bool // 各渠道空置结果（检查时一并计算）
 
-	// 分类清单快照缓存（30s）：CategoryExists / CategoryExistsFor /
+	// 分类清单快照缓存（30s）：CategoryExistsFor /
 	// AvailableCategories / pickExistingCategory 共用，避免错误请求风暴时
 	// 对每个分类名单独做文件系统探测（与 emptyCheckAt 相同的缓存策略）
 	catAt    time.Time
@@ -289,34 +289,9 @@ func (s *RandomService) SourceEmpty(source model.SourceType) bool {
 	return s.checkSourcesEmpty()[source]
 }
 
-// CategoryExists 判断指定图源中是否存在指定分类。
-//
-// category 支持逗号分隔多选（与 Random 一致），只要其中任一分类
-// 存在即返回 true。external 图源固定返回 true（分类校验由 API 池完成）。
-// 结果来自 30 秒快照缓存，避免错误请求风暴时频繁扫描文件系统。
-func (s *RandomService) CategoryExists(source model.SourceType, category string) bool {
-	if source == model.SourceExternal {
-		return true // external 的分类由 API 池的 categories 白名单校验，不在此判断
-	}
-	snap := s.categorySnapshot()
-	for _, cat := range splitCategories(category) {
-		switch source {
-		case model.SourceTxt:
-			if containsCategory(snap.txtAll, cat) {
-				return true
-			}
-		case model.SourceLocal:
-			if containsCategory(snap.localAll, cat) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // CategoryExistsFor 判断指定图源在"指定设备目录"下是否存在该分类。
 //
-// 与 CategoryExists（pc/pe 任一存在即 true）不同：按请求的设备类型精确检查，
+// 按请求的设备类型精确检查（不用"pc/pe 任一存在即 true"的宽松判定），
 // 用于区分"分类完全不存在"与"分类只在另一设备目录存在"——后者对当前设备
 // 同样返回"分类不存在"提示页，而不是让仓库报错落入 500。
 // category 支持逗号分隔多选，任一分类对当前设备存在即返回 true。

@@ -39,9 +39,9 @@ type TxtRepository struct {
 	fileCache map[string]txtFileCache
 
 	// Redis 故障冷却状态（见 shouldTryRedis / noteRedisFailure）
-	redisMu       sync.Mutex
-	redisFailAt   time.Time // 最近一次 Redis 失败时间（冷却期内直走文件）
-	redisLogAt    time.Time // 最近一次告警日志时间（限频：每分钟最多一条）
+	redisMu     sync.Mutex
+	redisFailAt time.Time // 最近一次 Redis 失败时间（冷却期内直走文件）
+	redisLogAt  time.Time // 最近一次告警日志时间（限频：每分钟最多一条）
 }
 
 // redisCooldown 是 Redis 失败后的冷却时长：期间不再尝试 Redis，
@@ -71,6 +71,7 @@ func (r *TxtRepository) Name() string { return "txt" }
 //
 // 读取策略：
 //  1. 优先从 Redis img:{pc|pe}:{category} Set 中用 SRandMember
+//     （命中后核对分类 TXT 文件仍在，见 txtFileExists）
 //  2. Redis 未命中/不可用 → 回退到直接读取 TXT 文件
 func (r *TxtRepository) Random(ctx context.Context, category string, deviceType model.DeviceType) (*model.Image, error) {
 	// Service 层已解析默认分类（含 TXT_DEFAULT_CATEGORY 配置），这里仅兜底空值
@@ -83,13 +84,20 @@ func (r *TxtRepository) Random(ctx context.Context, category string, deviceType 
 		deviceDir = "pe"
 	}
 
+	// 分类 TXT 路径：第 1 层命中后要拿它核对文件是否还在，第 2 层回退也用它
+	txtPath := filepath.Join(r.rootPath, deviceDir, category+".txt")
+
 	// ── 第 1 层：Redis Set 快速通道（故障冷却期内跳过）──
 	if r.cache != nil && r.shouldTryRedis() {
 		redisKey := fmt.Sprintf("img:%s:%s", deviceDir, category)
-		url, err := r.cache.SRandMember(ctx, redisKey)
-		if err == nil && url != "" && IsValidImageURL(url) {
-			logger.L.Debug("txt redis hit", "key", redisKey, "url", url)
-			return &model.Image{URL: url, Category: category}, nil
+		member, err := r.cache.SRandMember(ctx, redisKey)
+		// 命中后必须核对分类 .txt 仍然存在（L-04）：Redis Set 没有 TTL，
+		// 分类文件被删除或改名后旧键会无限期继续出图。核对不通过就丢弃这次命中，
+		// 让控制流落到下方文件回退 → os.IsNotExist → ErrNoImage（Handler 渲染 404）。
+		// 代价是每次命中多一次 os.Stat，远小于读整份 .txt（人类已确认接受该取舍）。
+		if err == nil && member != "" && IsValidImageURL(member) && r.txtFileExists(txtPath) {
+			logger.L.Debug("txt redis hit", "key", redisKey, "url", member)
+			return &model.Image{URL: member, Category: category}, nil
 		}
 		if err != nil && !errors.Is(err, cache.Nil) {
 			// 客户端取消/超时不是 Redis 故障：否则一次刷新/断网就会让全站
@@ -102,8 +110,6 @@ func (r *TxtRepository) Random(ctx context.Context, category string, deviceType 
 	}
 
 	// ── 第 2 层：TXT 文件回退 ──
-	txtPath := filepath.Join(r.rootPath, deviceDir, category+".txt")
-
 	lines, err := r.readLines(txtPath)
 	if err != nil {
 		// 文件不存在 → 分类不存在（哨兵错误供 Handler 渲染 404 提示页）；
@@ -132,6 +138,25 @@ func (r *TxtRepository) Random(ctx context.Context, category string, deviceType 
 		URL:      url,
 		Category: category,
 	}, nil
+}
+
+// txtFileExists 判断分类 TXT 文件是否仍是普通文件。
+//
+// Redis 命中后用它核对磁盘上的分类文件（L-04(a)）：Redis Set 没有 TTL，
+// 删除/改名 resources/txt/pc/anime.txt 后旧键会无限期继续出图，必须立刻不再出图。
+//
+// 非"文件不存在"的 stat 错误（权限、IO）不当作分类已删除：告警后返回 false，
+// 由调用方继续走文件回退，让 readLines 按既有口径返回错误（Handler 500），
+// 不把真实 IO 故障伪装成"分类不存在"。
+func (r *TxtRepository) txtFileExists(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logger.L.Warn("txt stat failed while validating redis hit", "path", path, "error", err)
+		}
+		return false
+	}
+	return fi.Mode().IsRegular()
 }
 
 // Health 检查 TXT 图库是否真的可用。

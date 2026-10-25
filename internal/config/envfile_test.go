@@ -45,16 +45,55 @@ func TestStripInlineComment(t *testing.T) {
 		{"30   # 保留天数", "30"},
 		{"0         # 单文件最大 MB", "0"},
 		{"plain", "plain"},
-		{"'pa#ss'", "pa#ss"},           // 成对单引号被剥掉，# 保留
-		{`"qu#oted"`, `qu#oted`},       // 成对双引号同理
-		{`"true"  # 开关`, `true`},     // 引号后跟注释
-		{"pa#ss", "pa"},                // 无空格分隔时 godotenv 同样截断
+		{"'pa#ss'", "pa#ss"},     // 成对单引号被剥掉，# 保留
+		{`"qu#oted"`, `qu#oted`}, // 成对双引号同理
+		{`"true"  # 开关`, `true`}, // 引号后跟注释
+		{"pa#ss", "pa#ss"},       // # 前不是空白：属于值本身，不截断
+		{"foo#baz", "foo#baz"},   // 同上，取自 godotenv 夹具 bar=foo#baz
+		{"foo #baz", "foo"},      // 空白之后的 # 仍是注释
 		{"", ""},
 		{"   # 全注释", ""},
 	}
 	for _, c := range cases {
 		if got := stripInlineComment(c.in); got != c.want {
 			t.Errorf("stripInlineComment(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestReadEnvValuesInlineCommentMatchesGodotenv 回归 C-01：
+// godotenv 只在 # 的前一个字符是空白时才把 # 当行内注释起点。前三个键取自依赖自带的
+// fixtures/comments.env，期望值与 godotenv 的 TestComments 完全相同；
+// 此前 GUI 见 # 就截断，REDIS_PASSWORD=pa#ss 这类值保存一次就被静默改写成 "pa"。
+func TestReadEnvValuesInlineCommentMatchesGodotenv(t *testing.T) {
+	dir := t.TempDir()
+	content := "# 整行注释\n" +
+		"foo=bar # baz\n" +
+		"bar=foo#baz\n" +
+		`baz="foo"#bar` + "\n" +
+		"COMMENTED=foo #baz\n" +
+		"REDIS_PASSWORD=pa#ss\n" +
+		`QUOTED="a#b"` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	values, err := ReadEnvValues(dir)
+	if err != nil {
+		t.Fatalf("ReadEnvValues: %v", err)
+	}
+
+	cases := map[string]string{
+		"foo":            "bar",     // 空白之后的 # 是行内注释
+		"bar":            "foo#baz", // # 前无空白，值原样保留（与 godotenv TestComments 一致）
+		"baz":            "foo",     // 引号收尾后紧跟 # 也不进入值
+		"COMMENTED":      "foo",     // 验收用例 bar=foo #baz 的值形态
+		"REDIS_PASSWORD": "pa#ss",   // 未加引号的 # 不再被误截
+		"QUOTED":         "a#b",     // 引号包裹的 # 行为保持不变
+	}
+	for key, want := range cases {
+		if got := values[key]; got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
 		}
 	}
 }

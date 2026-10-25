@@ -142,3 +142,67 @@ func TestLoadMissingEnv(t *testing.T) {
 		t.Errorf("LocalIndexRefresh default = %q, want empty (disabled)", C.LocalIndexRefresh)
 	}
 }
+
+// TestLoadCircuitHalfOpenMaxFallback 验证"非法值回退到默认值"对两类非法输入都成立：
+// CIRCUIT_HALF_OPEN_MAX=0（<=0 由边界校验兜底）与 =abc（Atoi 失败由 getInt 兜底）
+// 的最终值必须一致且等于默认值 3——此前 =0 会回退成 1，同一种"非法"出现两种结果。
+func TestLoadCircuitHalfOpenMaxFallback(t *testing.T) {
+	values := make(map[string]int, 2)
+	for _, raw := range []string{"0", "abc"} {
+		clearEnv(t)
+		t.Setenv("CIRCUIT_HALF_OPEN_MAX", raw)
+		if err := Load(t.TempDir()); err != nil {
+			t.Fatalf("CIRCUIT_HALF_OPEN_MAX=%q: %v", raw, err)
+		}
+		values[raw] = C.CircuitHalfOpenMax
+	}
+
+	if values["0"] != values["abc"] {
+		t.Fatalf("非法值回退不一致：=0 → %d，=abc → %d", values["0"], values["abc"])
+	}
+	if values["0"] != 3 {
+		t.Fatalf("非法值回退 = %d，want 3（默认值）", values["0"])
+	}
+}
+
+// TestLoadBoolFallback 验证非法布尔值回退到默认值（与 getInt 的整数回退一致）：
+// 此前 ParseBool 失败恒返回 false，RATE_LIMIT_ENABLED=yes 会静默把限流关掉。
+// CORS_ENABLED / RATE_LIMIT_ENABLED 的默认值是 true，回退逻辑没生效就必然变 false；
+// 最后一例是合法值 false，必须原样生效，不能被"回退默认"覆盖成 true。
+func TestLoadBoolFallback(t *testing.T) {
+	hasWarn := func(substr string) bool {
+		for _, w := range Warnings {
+			if strings.Contains(w, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	cases := []struct {
+		key   string
+		raw   string
+		want  bool
+		warns bool
+		read  func() bool
+	}{
+		{"CORS_ENABLED", "yes", true, true, func() bool { return C.CorsEnabled }},
+		{"RATE_LIMIT_ENABLED", "on", true, true, func() bool { return C.RateLimitEnabled }},
+		{"APP_DEBUG", "maybe", false, true, func() bool { return C.Debug }},
+		{"RATE_LIMIT_ENABLED", "false", false, false, func() bool { return C.RateLimitEnabled }},
+	}
+
+	for _, tc := range cases {
+		clearEnv(t)
+		t.Setenv(tc.key, tc.raw)
+		if err := Load(t.TempDir()); err != nil {
+			t.Fatalf("%s=%q: %v", tc.key, tc.raw, err)
+		}
+		if got := tc.read(); got != tc.want {
+			t.Errorf("%s=%q → %v, want %v", tc.key, tc.raw, got, tc.want)
+		}
+		if tc.warns && !hasWarn(tc.key+"=\""+tc.raw+"\"") {
+			t.Errorf("%s=%q 回退默认值却没有告警（Warnings 中找不到该条）", tc.key, tc.raw)
+		}
+	}
+}

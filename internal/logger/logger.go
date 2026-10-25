@@ -34,7 +34,7 @@ var (
 	workerMu   sync.Mutex
 	workerStop chan struct{} // 当前清理协程的停止信号（nil = 未启动）
 	workerDone chan struct{} // 当前清理协程的退出信号
-	activeFile *fileWriter   // 当前文件写入器（Close 时关闭，释放文件句柄）
+	activeFile *fileWriter   // 当前文件写入器（Close 与重复 Init 时关闭，释放文件句柄）
 )
 
 // fileWriter 将日志写入"今天"的日志文件，支持运行期轮转：
@@ -164,6 +164,12 @@ func backupFile(path string) {
 // maxAge: 保留天数（0=永久）
 // sizeMB: 单文件最大 MB（0=不限制）
 func Init(level, logDir string, maxAge, sizeMB int) error {
+	// 进程内重复 Init：先停掉上一次的清理协程、关闭旧的文件写入器，
+	// 再改写下面被协程读取的全局配置（顺序颠倒会让二者并发读写）；
+	// 漏掉这一步则每轮 Init 都泄漏一个 goroutine 与一个日志文件句柄。
+	stopWorker()
+	closeActiveFile()
+
 	logDirCache = logDir
 	maxAgeDays = maxAge
 	maxSizeMB = sizeMB
@@ -186,10 +192,6 @@ func Init(level, logDir string, maxAge, sizeMB int) error {
 
 	// 文件写入器：运行期支持跨天切换与大小切分
 	fw := newFileWriter(logDir)
-
-	// 若此前已启动过清理协程（进程内重复 Init），先停掉它与其文件句柄，
-	// 避免 goroutine 与文件句柄泄漏。
-	stopWorker()
 
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
@@ -236,6 +238,15 @@ func Init(level, logDir string, maxAge, sizeMB int) error {
 // 会让删除失败。关闭后 L 仍可写（写入被丢弃），不会 panic。
 func Close() {
 	stopWorker()
+	closeActiveFile()
+}
+
+// closeActiveFile 关闭当前文件写入器（幂等；未初始化时为空操作）。
+//
+// 先取出并置 nil，再在不持有 workerMu 的情况下关文件（避免与 fileWriter.mu 形成锁序），
+// 同一写入器因此只会被取出一次；fileWriter.Close 自身也幂等，
+// 所以 Init 与 Close 竞争时不会重复关闭同一个 *os.File。
+func closeActiveFile() {
 	workerMu.Lock()
 	fw := activeFile
 	activeFile = nil

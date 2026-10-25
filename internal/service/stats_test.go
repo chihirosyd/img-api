@@ -1,6 +1,9 @@
 package service
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestStatsDailyReset 验证今日计数跨天归零、累计计数保留。
 func TestStatsDailyReset(t *testing.T) {
@@ -40,7 +43,29 @@ func TestStatsCircuitTrip(t *testing.T) {
 	s := NewStats()
 	s.RecordCircuitTrip()
 	snap := s.Snapshot()
-	if snap.CircuitTrips != 1 || snap.TodayTrips != 1 {
-		t.Errorf("trips: total=%d today=%d, want 1/1", snap.CircuitTrips, snap.TodayTrips)
+	if snap.CircuitRejected != 1 || snap.TodayTrips != 1 {
+		t.Errorf("rejected: total=%d today=%d, want 1/1", snap.CircuitRejected, snap.TodayTrips)
+	}
+}
+
+// TestStatsSnapshotCircuitRejectedJSON 回归 C-02：快照 JSON 字段为 circuit_rejected，
+// 不再与 checks.circuit_trips（熔断器进入 OPEN 的次数）同名。
+func TestStatsSnapshotCircuitRejectedJSON(t *testing.T) {
+	s := NewStats()
+	s.RecordCircuitTrip()
+
+	b, err := json.Marshal(s.Snapshot())
+	if err != nil {
+		t.Fatalf("快照无法序列化: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("快照不是合法 JSON: %v", err)
+	}
+	if v, ok := got["circuit_rejected"]; !ok || v != float64(1) {
+		t.Errorf("circuit_rejected = %v (存在=%v), want 1", v, ok)
+	}
+	if _, ok := got["circuit_trips"]; ok {
+		t.Error("circuit_trips 不该再出现在 stats 快照里")
 	}
 }

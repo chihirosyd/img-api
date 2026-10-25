@@ -67,7 +67,8 @@ https://img.example.com/random?source=txt&category=anime&type=pe
 | 指定外部 API | `{服务地址}/random?source=external&api=picsum` |
 
 > 💡 `source=external` 需要先在 `config/image.yaml` 配置 API 池，未配置时返回 503 引导页
-> （按页面提示配置即可）；`api=picsum` 只是示例名，实际以你的配置为准。
+> （`<img>`/`mode=image` 的 SVG 占位图为 200，见下方状态码说明；按页面提示配置即可）；
+> `api=picsum` 只是示例名，实际以你的配置为准。
 
 > 💡 没看到图？页面会返回带文字的提示内容，对照 [常见状态码速查](#常见状态码速查) 就能找到原因。
 
@@ -100,6 +101,8 @@ GET /random?source=external
 | `mode` | string | — | `redirect` | 返回模式：`redirect` / `json` / `image` |
 | `category` | string | — | `default` | 图片分类，逗号分隔多选（如 `anime,scenery`），最长 128 字节。默认分类内置为 `default`（大小写不敏感），txt/local 渠道可通过 `TXT_DEFAULT_CATEGORY` / `LOCAL_DEFAULT_CATEGORY` 配置修改 |
 | `api` | string | — | 随机 | `source=external` 时指定使用哪个外部 API（不传则随机选一个），最长 128 字节 |
+
+> 📌 `category` 非法字符：`/`、`\`、`..`、Windows 非法字符 `* ? " < > | :`、控制字符、首尾空白 → 400；`category` 与 `api` 长度上限均为 128 字节。
 
 ### 参数详解
 
@@ -155,6 +158,8 @@ GET /random?source=external
 
 > API 名称对应 `config/image.yaml` 中 `name` 字段。未配置分类时自动使用 `default_category`（多个随机选）；都没有则不传分类（`{category}` 占位符置空、不加 `category_param`）。
 
+> 📌 `api` 仅在 `source=external` 时生效：其它 `source` 下该参数被**静默忽略**（不校验池中是否存在、不报错，也不影响随机取图）。
+
 > 📌 指定的 API 名称在池中不存在时返回 404 的"API 不存在"提示页（`mode=json` 为 JSON，
 > Debug 模式下附 `available` 可用列表），而不是 500。
 
@@ -184,11 +189,15 @@ GET /random?source=external
 
 | 响应头 | 说明 |
 |--------|------|
-| `X-Request-ID` | 本次请求的唯一追踪 ID（客户端传入的合法值会被复用，非法值自动重新生成），日志中同名字段与之对应 |
+| `X-Request-ID` | 本次请求的唯一追踪 ID（客户端传入的合法值会被复用，非法值自动重新生成；合法值超过 64 个 rune 会截断到 64），日志中同名字段与之对应 |
 | `X-Content-Type-Options` | `nosniff` |
 | `X-Frame-Options` | `DENY` |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` |
 | `Access-Control-Allow-Origin` | `*`（仅 `CORS_ENABLED=true` 时） |
+| `Access-Control-Allow-Methods` | `GET, OPTIONS`（仅 `CORS_ENABLED=true` 时） |
+| `Access-Control-Allow-Headers` | `Content-Type, Authorization, X-Request-ID`（仅 `CORS_ENABLED=true` 时） |
+| `Access-Control-Max-Age` | `86400`（仅 `CORS_ENABLED=true` 时） |
+| `Content-Security-Policy` | `sandbox`（仅当返回的图片本身是 SVG：`mode=image` 代理的上游 SVG、`source=local` 的 `.svg` 文件） |
 
 ### 响应示例
 
@@ -276,11 +285,12 @@ Cache-Control: public, max-age=300
 
 > 📌 `available` 字段仅在 `APP_DEBUG=true` 时返回，生产环境不暴露分类清单（上面的两个示例为 Debug 模式下的响应）。
 
-> 💡 **友好提示页**：请求的图源未配置任何内容时，返回 HTTP 503 的"开始使用"引导页（HTML），
+> 💡 **友好提示页**：请求的图源未配置任何内容时，浏览器直接访问返回 HTTP 503 的"开始使用"引导页（HTML），
 > 介绍三种添加图片的方式。图源有内容但请求的分类不存在时，返回 HTTP 404 的"分类不存在"
-> 提示页（可用分类列表仅在 Debug 模式下展示，生产环境不暴露）。`mode=json` 时返回 JSON；
+> 提示页（可用分类列表仅在 Debug 模式下展示，生产环境不暴露）。`mode=json` 时仍返回 JSON（503 或 404）；
 > 博客 `<img>` 标签嵌入场景（`Accept` 以 `image/` 开头或 `mode=image`）返回内嵌文字的 SVG 占位图，
-> 提示不会因裂图而消失。
+> 提示不会因裂图而消失——该分支状态码**固定为 200**：`<img>` 对非 2xx 响应不渲染内容，
+> 用 503 / 404 只会显示裂图。
 
 ---
 
@@ -309,7 +319,7 @@ GET /health
     "total_requests": 1234,
     "total_success": 1200,
     "total_fail": 34,
-    "circuit_trips": 0,
+    "circuit_rejected": 0,
     "uptime_seconds": 7530,
     "today_requests": 567,
     "today_success": 550,
@@ -340,7 +350,7 @@ GET /health
 > - Docker 探针：compose 使用 `health-check -strict`，`degraded` 会让容器显示 unhealthy
 
 > `external_pool` / `circuit_breaker` / `circuit_trips` / `cache` 为信息性状态，不参与健康判定。
-> `circuit_trips`（checks 内，字符串）为熔断器累计进入 OPEN 的次数，与 `stats.circuit_trips`（请求被熔断拦截的次数）含义不同。
+> `circuit_trips`（checks 内，字符串）为熔断器累计进入 OPEN 的次数，与 `stats.circuit_rejected`（被熔断器拒绝的请求数：含 OPEN 状态下的拒绝，以及 HALF_OPEN 探测槽位耗尽的拒绝，后者并不代表"刚熔断一次"）含义不同。
 > `version` 为代码内置版本号（随发布自动更新，与 CHANGELOG 一致）；
 > 可用环境变量 `APP_VERSION` 临时覆盖。
 > 统计字段两组：`total_*` 自服务启动累计（重启归零）；`today_*` 当日累计，按本地时间每日 0 点自动归零。
@@ -358,8 +368,11 @@ GET /health
 | 路由 | 说明 |
 |------|------|
 | `/random` | 获取随机图片 |
-| `/` | 首页：浏览器直接访问返回教程页 + 运行状态仪表盘；`<img>` 嵌入或带 `mode` 参数时等价于 `/random` |
+| `/` | 首页：浏览器直接访问返回教程页 + 运行状态仪表盘；`<img>` 嵌入或带 `mode` 参数时等价于 `/random`；防盗链豁免仅适用于“用浏览器地址栏访问首页”这一类请求（无 `mode` 且 `Accept` 不以 `image/` 开头），出图分支照常校验 `Referer` |
 | `/health` | 健康检查（完整内部状态与运行时统计） |
+
+> 📌 `OPTIONS` 预检：任意路径的预检请求由 CORS 中间件直接返回 **204**（无响应体）并携带 [通用响应头](#通用响应头) 中的 `Access-Control-*` 头，不进入业务路由；
+> 预检同样**计入限流**（限流器在 CORS 外层）；`CORS_ENABLED=false` 时同样返回 204，只是不带跨域头。
 
 ---
 
@@ -372,15 +385,15 @@ GET /health
 | `302` | ✅ 成功 | 默认模式 `redirect` 正在跳转到真实图片 | 无需处理，浏览器和 `<img>` 标签会自动跟随 |
 | `200` | ✅ 成功 | `mode=json` 或 `mode=image` | 无需处理 |
 | `400` | 参数写错 | 参数值不在允许范围（非法字符、超长等） | 对照 [请求参数](#请求参数) 表检查拼写 |
-| `403` | 被拒绝 | Referer 不在防盗链白名单 | 联系站长确认白名单 |
+| `403` | 被拒绝 | ① Referer 不在防盗链白名单；② `source=local` 的目标路径未通过安全检查——越界到项目根目录外、含 `..` 路径穿越、任一级父目录为符号链接（含 open 后复检）、非普通文件（原因只写日志，不回显给客户端） | ① 联系站长确认白名单；② 确认图片路径在 `resources/local` 内且不是符号链接 |
 | `404` | 资源不存在 | 分类名与 txt 文件名不一致、多分类全都不存在、external 池无此 API、`source=local` 的文件已被删除、访问了不存在的路径（返回 JSON 而非纯文本） | 检查拼写；Debug 模式下响应会附可用列表 |
 | `405` | 方法不允许 | 用了非 GET 方法（如 POST） | 本 API 仅支持 GET / OPTIONS |
 | `413` | 图片太大 | `source=local` 且文件超过 50MB | 换更小的图，或压缩后重试 |
-| `415` | 类型不支持 | `source=local` 且扩展名不在 jpg/png/gif/webp/bmp/svg 之列 | 换成受支持的图片格式 |
+| `415` | 类型不支持 | `source=local` 且扩展名不在 jpg/jpeg/png/gif/webp/bmp/svg 之列 | 换成受支持的图片格式 |
 | `429` | 请求太频繁 | 触发限流（响应附 `Retry-After: 60`，客户端可据此自动退避） | 放慢频率，或联系站长调整限流配置 |
 | `500` | 服务端处理失败 | 图源临时故障、本地文件读不出等 | 查看服务日志排查 |
 | `502` | 外部图源取图失败 | `mode=image` 时代理上游返回非 2xx / 非图片内容 / 超过 50MB | 多为上游图床问题；换一张图或稍后重试 |
-| `503` | 图源还没有内容 | 请求的 source 还没配置任何图片 | 页面本身是"开始使用"引导，按提示添加图片 |
+| `503` | 图源还没有内容 | 请求的 source 还没配置任何图片 | 页面本身是"开始使用"引导，按提示添加图片（`<img>`/`mode=image` 的 SVG 占位图为 200） |
 
 > 🕒 **自 v1.6.0 起**：
 > - `source=local` 的错误码由统一的 `502` 拆分为 `404`（文件不存在）/ `415`（类型不支持）/ `413`（超过 50MB）；

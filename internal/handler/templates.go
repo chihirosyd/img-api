@@ -2,12 +2,12 @@ package handler
 
 // 本文件集中提示页的 HTML 模板常量，避免挤占 api.go 的处理逻辑。
 //
-//   - homePage             — 根路径 / 的教程首页（{{HOST}} 由 Home 动态替换）
+//   - homePage             — 根路径 / 的教程首页（{{SCHEME}} / {{HOST}} 由 Home 动态替换）
 //   - setupGuidePage       — 图源未配置时的"开始使用"引导页
 //   - categoryNotFoundPage — 分类不存在时的提示页（{{CATEGORY}} / {{AVAILABLE}} 由 renderCategoryNotFound 动态替换）
 
 // homePage 是访问根路径 / 时的项目首页（教程页）。
-// {{HOST}} 由 Home handler 替换为当前请求的 Host，用于展示完整示例 URL。
+// {{SCHEME}} / {{HOST}} 由 Home handler 替换为当前请求的协议与 Host，用于展示完整示例 URL。
 // {{STATUS}} 由 Home handler 注入运行状态区块（见 homeStatusHTML）。
 const homePage = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -141,10 +141,10 @@ const homePage = `<!DOCTYPE html>
   <h2>三步上手</h2>
   <div class="steps">
     <div class="step"><span class="num">1</span><span class="t">打开随机图</span>
-      <p><code>http://{{HOST}}/random</code>，浏览器直接跳转到一张随机图片</p>
+      <p><code>{{SCHEME}}://{{HOST}}/random</code>，浏览器直接跳转到一张随机图片</p>
     </div>
     <div class="step"><span class="num">2</span><span class="t">嵌入博客</span>
-      <p><code>&lt;img src="http://{{HOST}}/random"&gt;</code></p>
+      <p><code>&lt;img src="{{SCHEME}}://{{HOST}}/random"&gt;</code></p>
     </div>
     <div class="step"><span class="num">3</span><span class="t">指定分类</span>
       <p>分类名 = 图库 txt 文件名（local 图源为目录名），如 <code>?category=风景</code>；不传则用默认分类</p>

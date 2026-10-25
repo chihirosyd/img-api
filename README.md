@@ -97,10 +97,14 @@ GET /random?type=auto&source=txt&mode=redirect&category=default
 | 参数 | 类型 | 默认 | 说明 |
 |------|------|------|------|
 | `type` | string | `auto` | `auto` / `pc` / `pe` |
-| `source` | string | `txt` | `txt` / `local` / `external` |
+| `source` | string | `txt`（可用 `DEFAULT_SOURCE` 覆盖） | `txt` / `local` / `external` |
 | `mode` | string | `redirect` | `redirect` / `json` / `image` |
 | `category` | string | `default` | 逗号分隔多选（如 `anime,scenery`），最长 128 字节 |
-| `api` | string | — | 指定池中具体的外部 API（需配合 `source=external`；值为 `image.yaml` 中该项的 `name`，不传则随机选一个） |
+| `api` | string | — | 指定池中具体的外部 API（需配合 `source=external`；值为 `image.yaml` 中该项的 `name`，不传则随机选一个），最长 128 字节 |
+
+> 📌 参数归一化：`type` / `source` / `mode` 会做 `ToLower` + `TrimSpace`；`category` / `api` **不做 Trim**，`?category=%20a`（前导空格）会被判为非法并返回 400。
+>
+> 📌 `category` 非法字符：`/`、`\`、`..`、Windows 非法字符 `* ? " < > | :`、控制字符、首尾空白 → 400（长度上限 128 字节，见上表）。
 
 > ⚠️ `source=local` 不支持 302 跳转（图源返回的是文件系统路径）：`mode=redirect`
 > 会**自动降级为 `mode=image`**（服务端直接输出图片），也可显式使用
@@ -162,16 +166,23 @@ GET /health              → 完整状态与运行时统计
 ## 🚢 发布新版本（维护者）
 
 完整的发布流程、前置检查清单与 CI 时序图见
-[docs/DEPLOY.md → GitHub Actions](docs/DEPLOY.md#github-actions)，关键三步：
+[docs/DEPLOY.md → GitHub Actions](docs/DEPLOY.md#github-actions)。
+
+**依赖升级不算发布提交的一部分**：它应在发布前单独完成并单独提交（见 docs/DEPLOY.md
+的「发布前本地检查清单」），发布提交只含 CHANGELOG + 版本号。关键步骤：
 
 ```bash
 # 注：vX.Y.Z 是版本占位符，请替换为实际版本号（如 v1.5.0）
-# 1. 更新 CHANGELOG 后同步版本号
+# 1. 发布前单独升级依赖并整理（本地需 Go 1.26+），单独提交，不混进发布提交
+go get -u ./... && go mod tidy
+git add go.mod go.sum
+git diff --cached --quiet || git commit -m "chore: bump deps"
+# 2. 更新 CHANGELOG 后同步版本号：发布提交只含 CHANGELOG + 版本号
 go run ./cmd/setversion
-# 2. 升级依赖并提交（本地需 Go 1.26+），先推 main
-go get -u ./... && go mod tidy && git add -A && git commit -m "release vX.Y.Z"
+git add -A && git commit -m "release vX.Y.Z"
+# 3. 先推 main
 git push origin main
-# 3. 等 Update go.sum 工作流跑完，先 pull 再打 tag（否则 tag 落在旧提交上）
+# 4. 等 Update go.sum 工作流跑完，先 pull 再打 tag（否则 tag 落在旧提交上）
 git pull --rebase
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
@@ -191,28 +202,36 @@ img-api/
 │   ├── server/                 # 主服务（命令行）
 │   ├── gui/                    # Windows 图形控制面板（img-api-gui.exe）
 │   ├── build-index/            # 本地图片索引（手动重建，通常无需运行）
-│   ├── health-check/           # 健康检查 CLI
-│   ├── sync-redis/             # TXT → Redis 同步
-│   ├── genicon/                # exe/托盘图标生成器
+│   ├── health-check/           # 健康检查 CLI（容器 healthcheck 在用）
+│   ├── sync-redis/             # TXT → Redis 同步（退出码 0/1/2）
+│   ├── genicon/                # exe / 托盘图标生成器
 │   └── setversion/             # CHANGELOG → config.go 版本同步
 ├── internal/                   # 核心源码
-│   ├── config/                 # 配置中心
-│   ├── model/                  # 数据模型
-│   ├── handler/                # HTTP 处理器
-│   ├── service/                # 业务编排
-│   ├── repository/             # 数据仓库
-│   ├── cache/                  # Redis + 内存缓存
+│   ├── app/                    # 应用装配：服务生命周期、根目录探测、开机自启
+│   ├── config/                 # 配置加载与校验（.env、image.yaml）
+│   ├── model/                  # 数据模型与哨兵错误
+│   ├── handler/                # HTTP 处理器与提示页模板
+│   ├── service/                # 业务编排（随机取图、分类快照、统计）
+│   ├── repository/             # 图源仓库（txt / local / external）
+│   ├── cache/                  # Redis + 内存缓存（含降级）
 │   ├── circuit/                # 熔断器
-│   ├── netx/                   # 安全出站 HTTP（防 SSRF/DNS rebinding）
-│   ├── middleware/              # 中间件链
-│   ├── device/                 # 设备检测
-│   ├── logger/                 # 日志
-│   └── app/                    # 工具
-├── resources/                  # 图库目录（txt/ 和 local/）
-├── config/image.yaml          # 外部 API 池配置
-├── docs/                       # 文档
-├── Dockerfile
-└── .env.example
+│   ├── netx/                   # 安全出站 HTTP（防 SSRF / DNS rebinding）
+│   ├── httpx/                  # HTTP 响应辅助（io.ReaderFrom 透传）
+│   ├── middleware/             # 中间件链（恢复 / 请求 ID / 访问日志 / 限流 / CORS / 防盗链）
+│   ├── device/                 # 设备类型检测
+│   └── logger/                 # 结构化日志与轮转
+├── resources/                  # 图库目录（txt/ 与 local/，见下文）
+├── config/image.yaml           # 外部 API 池配置
+├── docker/                     # 容器入口脚本（entrypoint.sh）
+├── docs/                       # 对外契约文档（API / 配置 / 部署）
+├── storage/                    # 运行时产物：本地索引与日志（内容不入库）
+├── .github/workflows/          # CI：检查、发布、镜像
+├── Dockerfile                  # 服务镜像
+├── docker-compose.yml          # 部署示例（健康检查与目录挂载）
+├── .env.example                # 配置模板（面向网关的推荐值）
+├── CHANGELOG.md                # 版本记录（发布说明来源）
+├── CONTRIBUTING.md             # 贡献约定（代码 / 注释 / 文档一致性）
+└── LICENSE                     # MIT
 ```
 
 ---
@@ -259,7 +278,7 @@ resources/local/
         └── photo.jpg
 ```
 
-支持 jpg/png/gif/webp/bmp/svg。
+支持 jpg/jpeg/png/gif/webp/bmp/svg。
 
 > 📁 源码/二进制包部署时，`pc/default/` 与 `pe/default/` 目录骨架已随项目提供；
 > Docker 远程镜像部署（只下载 compose 文件）时，首次启动会自动补齐这些目录。

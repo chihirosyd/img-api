@@ -55,8 +55,15 @@ jobs:
         run: go vet ./...
 
       - name: Run staticcheck
-        # 与本地开发一致的深度静态检查；固定版本保证结果可复现
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+        # 与本地开发一致的深度静态检查。
+        # 钉死 v0.8.2 而非 @latest：比原 v0.7.0（go 指令 1.25.0）新，自身 go 指令为 1.26.0，
+        # 与本模块 go.mod 的 go 1.26.0 对齐；同时钉死保证 CI 结果可复现，不随上游发布漂移。
+        # 升级 Go 大版本（go.mod 的 go 指令）时必须同步复核本工具版本，
+        # 否则会重现"工具比 Go 旧"的硬失败（新版 Go 的导出数据它读不了）。
+        run: |
+          # 先打印实际解析到的版本，便于日后追溯本次检查跑的是哪一版
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -version
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
       - name: Run tests
         run: go test ./...

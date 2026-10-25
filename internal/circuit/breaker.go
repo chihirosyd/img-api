@@ -26,8 +26,8 @@ type State int
 
 const (
 	StateClosed   State = iota // 正常通行，计数连续失败
-	StateOpen                   // 断路中，立即拒绝所有请求
-	StateHalfOpen               // 探测恢复，放行有限请求测试远端是否恢复
+	StateOpen                  // 断路中，立即拒绝所有请求
+	StateHalfOpen              // 探测恢复，放行有限请求测试远端是否恢复
 )
 
 // String 返回状态的可读英文名（CLOSED / OPEN / HALF_OPEN）。
@@ -68,9 +68,10 @@ type Breaker struct {
 // NewBreaker 创建熔断器实例。
 //
 // 参数说明：
-//   failureThreshold — CLOSED 状态连续失败多少次后转为 OPEN（建议 3~10）
-//   timeoutSeconds   — OPEN 状态持续多少秒后尝试 HALF_OPEN（建议 30~120；<=0 表示立即半开，测试用）
-//   halfOpenMax      — HALF_OPEN 最多放行多少请求，任一成功即恢复 CLOSED（建议 1~5）
+//
+//	failureThreshold — CLOSED 状态连续失败多少次后转为 OPEN（建议 3~10）
+//	timeoutSeconds   — OPEN 状态持续多少秒后尝试 HALF_OPEN（建议 30~120；<=0 表示立即半开，测试用）
+//	halfOpenMax      — HALF_OPEN 最多放行多少请求，任一成功即恢复 CLOSED（建议 1~5）
 //
 // 入参防御性钳位：failureThreshold/halfOpenMax 至少为 1——非法值（如 0）
 // 会让熔断器恒开（halfTries>=0 恒真）或一次失败即熔断，外部图源永久不可用。

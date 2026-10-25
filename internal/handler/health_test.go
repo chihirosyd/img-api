@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"img-api/internal/cache"
 	"img-api/internal/model"
@@ -122,5 +124,113 @@ func TestHealthOKWithoutExternalRepo(t *testing.T) {
 	}
 	if got["status"] != "ok" {
 		t.Errorf("status = %v, want ok（external 未配置不参与判定）", got["status"])
+	}
+}
+
+// TestHealthUptimeMatchesStats 回归 N-02：同一响应里的 uptime 与 stats.uptime_seconds
+// 必须同源——两者各自取时刻时会夹进启动期的预热扫描，一个响应报出两个运行时长。
+func TestHealthUptimeMatchesStats(t *testing.T) {
+	stats := service.NewStats()
+	svc := service.NewRandomService(t.TempDir(), cache.NewMemoryCache(), nil, stats)
+	h := NewHealthHandler(svc, stats)
+
+	w := httptest.NewRecorder()
+	h.Health(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	var got struct {
+		Uptime string `json:"uptime"`
+		Stats  struct {
+			UptimeSeconds int64 `json:"uptime_seconds"`
+		} `json:"stats"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	if want := formatDuration(time.Duration(got.Stats.UptimeSeconds) * time.Second); got.Uptime != want {
+		t.Errorf("uptime = %q, stats.uptime_seconds = %d, 两者不同源（应为 %q）",
+			got.Uptime, got.Stats.UptimeSeconds, want)
+	}
+	// 独立时间点已移除，防止再引入第二个时间源
+	if _, ok := reflect.TypeOf(HealthHandler{}).FieldByName("startAt"); ok {
+		t.Error("HealthHandler 不该再持有独立的 startAt")
+	}
+}
+
+// TestHealthCircuitTripFieldNames 回归 C-02：checks.circuit_trips（熔断器进入 OPEN 的次数，
+// 字符串）与 stats.circuit_rejected（被熔断器拒绝的请求数，整数）必须不同名。
+func TestHealthCircuitTripFieldNames(t *testing.T) {
+	stats := service.NewStats()
+	stats.RecordCircuitTrip()
+	svc := service.NewRandomService(t.TempDir(), cache.NewMemoryCache(), nil, stats)
+	h := NewHealthHandler(svc, stats)
+
+	w := httptest.NewRecorder()
+	h.Health(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	var got struct {
+		Checks map[string]string `json:"checks"`
+		Stats  map[string]any    `json:"stats"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	if _, ok := got.Checks["circuit_trips"]; !ok {
+		t.Error("checks.circuit_trips 应保留（熔断器进入 OPEN 的次数）")
+	}
+	if _, ok := got.Stats["circuit_trips"]; ok {
+		t.Error("stats.circuit_trips 应改名为 stats.circuit_rejected")
+	}
+	if v, ok := got.Stats["circuit_rejected"]; !ok || v != float64(1) {
+		t.Errorf("stats.circuit_rejected = %v (存在=%v), want 1", v, ok)
+	}
+}
+
+// TestHealthChecksCached 回归 I-03：checks 在 healthCacheTTL 内复用，避免 /health 被轮询时
+// 反复扫盘；缓存只包 checks，status 仍反映缓存时刻的真实状态。
+func TestHealthChecksCached(t *testing.T) {
+	root := t.TempDir()
+	pc := filepath.Join(root, "resources", "txt", "pc")
+	if err := os.MkdirAll(pc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pc, "default.txt"), []byte("https://example.com/a.jpg\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := service.NewStats()
+	svc := service.NewRandomService(root, cache.NewMemoryCache(), nil, stats)
+	_ = svc.GetRepo(model.SourceTxt)
+	h := NewHealthHandler(svc, stats)
+
+	statusOf := func() string {
+		w := httptest.NewRecorder()
+		h.Health(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("响应不是合法 JSON: %v", err)
+		}
+		s, _ := got["status"].(string)
+		return s
+	}
+
+	// pe 子目录缺失 → 首次请求应检出 degraded
+	if got := statusOf(); got != "degraded" {
+		t.Fatalf("首次 status = %q, want degraded（pe 子目录缺失）", got)
+	}
+
+	// 补齐目录后立即再请求：仍命中缓存，不应立刻翻牌
+	if err := os.MkdirAll(filepath.Join(root, "resources", "txt", "pe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != "degraded" {
+		t.Errorf("缓存期内 status = %q, want degraded（%v 内复用结果）", got, healthCacheTTL)
+	}
+
+	// 缓存过期后应反映真实状态
+	h.checksMu.Lock()
+	h.checksAt = time.Time{}
+	h.checksMu.Unlock()
+	if got := statusOf(); got != "ok" {
+		t.Errorf("缓存过期后 status = %q, want ok", got)
 	}
 }

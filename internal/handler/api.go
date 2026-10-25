@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"img-api/internal/config"
 	"img-api/internal/device"
@@ -80,13 +81,27 @@ func (h *APIHandler) Home(w http.ResponseWriter, r *http.Request) {
 	if host == "" {
 		host = "localhost:8080"
 	}
-	page := strings.ReplaceAll(homePage, "{{HOST}}", html.EscapeString(host))
+	page := strings.ReplaceAll(homePage, "{{SCHEME}}", requestScheme(r))
+	page = strings.ReplaceAll(page, "{{HOST}}", html.EscapeString(host))
 	page = strings.ReplaceAll(page, "{{STATUS}}", h.homeStatusHTML(r))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, page)
+}
+
+// requestScheme 推断示例 URL 应使用的 scheme。
+//
+// 只采信 TLS 握手结果：middleware 里的 realClientIP/parseTrustedProxies 未导出，
+// handler 层无法复用其"对端是否可信代理"的判定，而直接采信 X-Forwarded-Proto
+// 会让任意客户端把示例链接伪造成 https（实际并未提供 TLS）。反代终结 TLS 的部署
+// 下首页展示 http 链接属可接受的降级。
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // homeStatusHTML 构建首页"运行状态"区块。
@@ -127,7 +142,7 @@ func (h *APIHandler) homeStatusHTML(r *http.Request) string {
 	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">总请求</div></div>`, snap.TotalRequests)
 	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">成功</div></div>`, snap.TotalSuccess)
 	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">失败</div></div>`, snap.TotalFail)
-	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">熔断</div></div>`, snap.CircuitTrips)
+	fmt.Fprintf(&b, `<div class="stat-card"><div class="num">%d</div><div class="label">熔断</div></div>`, snap.CircuitRejected)
 	b.WriteString(`</div>`)
 
 	b.WriteString(`<p class="sub">今日 · 每日 0 点重置</p>`)
@@ -223,6 +238,17 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// 分类名字符校验：只拦分隔符与 .. 时，含 Windows 文件名非法字符的请求
+	// （如 ?category=a*b）会让 os.Stat 返回非 ENOENT 错误，最终落到 500 + ERROR 日志，
+	// 与真实故障混淆，故在参数校验阶段直接按 400 拒绝。
+	if !validCategoryName(params.Category) {
+		h.stats.RecordFail()
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code":    400,
+			"message": "invalid category: must not contain reserved or control characters, or leading/trailing spaces",
+		})
+		return
+	}
 	// 参数长度上限：category/api 会写入日志与提示页，超长输入会造成日志膨胀与响应放大
 	if len(params.Category) > 128 {
 		h.stats.RecordFail()
@@ -313,8 +339,9 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, img.URL, http.StatusFound)
 		h.stats.RecordSuccess()
 	case model.ModeJSON:
-		// 本地图源：url 字段返回相对图库根目录的路径（如 pc/default/a.jpg），
-		// 避免向外部泄露服务器绝对路径；mode=image 仍用绝对路径直接读文件
+		// 本地图源：url 字段返回相对项目根的路径（含 resources/ 前缀，
+		// 如 resources/local/pc/default/a.jpg），避免向外部泄露服务器绝对路径；
+		// mode=image 仍用绝对路径直接读文件
 		respImg := img
 		if params.Source == model.SourceLocal {
 			cp := *img
@@ -329,20 +356,21 @@ func (h *APIHandler) Random(w http.ResponseWriter, r *http.Request) {
 		h.stats.RecordSuccess()
 	case model.ModeImage:
 		var ok bool
+		// 统计用 defer 收口：输出超限时下面的 proxyImage 会 panic(http.ErrAbortHandler)
+		// 主动断连，顺序执行的成功/失败计数会被 panic 跳过，这类请求在统计里凭空消失。
+		defer func() {
+			if ok {
+				h.stats.RecordSuccess()
+				return
+			}
+			h.stats.RecordFail()
+		}()
 		if params.Source == model.SourceLocal {
 			// 本地文件：直接读取并输出（无需 HTTP 代理）
 			ok = h.serveLocalFile(w, r, img.URL)
 		} else {
 			ok = h.proxyImage(w, r, img.URL)
 		}
-		if ok {
-			h.stats.RecordSuccess()
-		} else {
-			h.stats.RecordFail()
-		}
-	default:
-		http.Redirect(w, r, img.URL, http.StatusFound)
-		h.stats.RecordSuccess()
 	}
 }
 
@@ -724,6 +752,31 @@ func (h *APIHandler) writePlaceholderSVG(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, b.String())
+}
+
+// categoryReservedChars 是分类名中不允许出现的 Windows 文件名非法字符。
+// 路径分隔符 / \ 由 Random 的专项检查拦截，这里不重复。
+const categoryReservedChars = `*?"<>|:`
+
+// validCategoryName 校验分类名的字符集。
+//
+// 分类名可以是中文（如"风景"），因此用黑名单而不是 ASCII 白名单：
+// 拒绝 Windows 文件名非法字符、控制字符（C0 与 DEL）与首尾空白；
+// 中文、字母、数字、空格、_ - . 以及逗号（多选分隔符）均允许，
+// .. 与路径分隔符由调用方的既有检查处理。
+func validCategoryName(s string) bool {
+	if s == "" {
+		return true
+	}
+	if strings.TrimSpace(s) != s {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || strings.ContainsRune(categoryReservedChars, r) {
+			return false
+		}
+	}
+	return true
 }
 
 // parseParams 从 HTTP query string 中提取并组装 RandomParams。

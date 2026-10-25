@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // EnvFile 返回项目根目录下 .env 文件的路径。
@@ -65,9 +66,9 @@ func ReadEnvValues(rootPath string) (map[string]string, error) {
 // stripInlineComment 剥离行内注释，并去掉成对引号（与 godotenv 的解析结果保持一致）：
 //
 //	"30   # 保留天数"  → "30"
+//	"foo#baz"          → "foo#baz"  （# 前不是空白，属于值本身）
 //	`"true"`           → "true"     （godotenv 会剥掉引号，GUI 也必须剥）
 //	`'pa#ss'`          → "pa#ss"    （引号内的 # 是字面量）
-//	"pa#ss"            → "pa"       （无空格分隔时 godotenv 同样截断）
 //
 // 此前以引号开头的值整体原样返回：`.env` 里写 RATE_LIMIT_ENABLED="true" 时
 // GUI 拿到带引号的字符串，与 "true" 比较为假 → 复选框显示未勾选，
@@ -81,8 +82,14 @@ func stripInlineComment(val string) string {
 		}
 		return val
 	}
-	if i := strings.IndexByte(val, '#'); i >= 0 {
-		return strings.TrimSpace(val[:i])
+	// 未加引号的值：与 godotenv 相同，只有前一个字符是空白的 # 才是注释起点，
+	// 紧跟在字符后面的 # 属于值本身（pa#ss 不能被截成 pa）。依赖侧从行尾
+	// 倒着扫并取最靠后的一处，这里保持同样的方向以免多段 # 时结果不同。
+	runes := []rune(val)
+	for i := len(runes) - 1; i > 0; i-- {
+		if runes[i] == '#' && unicode.IsSpace(runes[i-1]) {
+			return strings.TrimSpace(string(runes[:i]))
+		}
 	}
 	return val
 }

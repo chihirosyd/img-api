@@ -3,8 +3,11 @@
 # 用于 external 数据源，可配置多个外部 API 端点
 #
 # 💡 如果 external_apis 列表为空（如下方全部注释掉），
-#    访问 source=external 时将返回"开始使用"引导页（HTTP 503），
-#    指导管理员在此文件中添加外部 API 端点。
+#    访问 source=external 时将返回"开始使用"引导页，状态码按响应格式区分：
+#    HTML 引导页与 mode=json 为 HTTP 503；
+#    <img> / mode=image 的 SVG 占位图固定为 200——浏览器对 <img> 的非 2xx 响应
+#    不渲染 body，只会显示裂图。
+#    引导页会指导管理员在此文件中添加外部 API 端点。
 # ============================================================
 #
 # 每个 API 支持以下字段（键名大小写不敏感，推荐全小写，如 external_apis / response_type）：

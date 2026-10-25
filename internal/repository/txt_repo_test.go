@@ -146,11 +146,16 @@ func (h *hitCache) SRandMember(ctx context.Context, key string) (string, error) 
 	return h.url, nil
 }
 
-// TestTxtRepositoryRedisHit Redis 快速通道命中时直接返回 Set 成员，
-// 不读文件（SRandMember O(1) 加速路径）。
+// TestTxtRepositoryRedisHit Redis 快速通道命中且分类文件仍在时，直接返回 Set 成员，
+// 不读文件内容（SRandMember O(1) 加速路径）。
+//
+// 注意文件里放的是另一个 URL：命中时返回 redis 成员即证明没有走文件内容。
 func TestTxtRepositoryRedisHit(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "pc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pc", "anime.txt"), []byte("https://file.example/9.jpg\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -167,5 +172,47 @@ func TestTxtRepositoryRedisHit(t *testing.T) {
 	}
 	if hc.calls != 1 {
 		t.Fatalf("redis calls = %d, want 1", hc.calls)
+	}
+}
+
+// TestTxtRepositoryRedisHitRequiresExistingFile 回归 L-04(a)：Redis 里还留着集合，
+// 但分类 .txt 已被删除/改名时，不得再返回该 URL（Set 没有 TTL，否则永久出图）。
+// 命中被丢弃后应落到文件回退 → ErrNoImage，由 Handler 渲染 404 提示页。
+func TestTxtRepositoryRedisHitRequiresExistingFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "pc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	hc := &hitCache{url: "https://redis.example/1.jpg"}
+	repo := NewTxtRepository(root, hc)
+
+	_, err := repo.Random(context.Background(), "anime", model.DevicePC)
+	var noImg *model.ErrNoImage
+	if !errors.As(err, &noImg) {
+		t.Fatalf("文件已删除时应返回 ErrNoImage，实际 err = %v", err)
+	}
+	if hc.calls != 1 {
+		t.Fatalf("redis calls = %d, want 1", hc.calls)
+	}
+}
+
+// TestTxtRepositoryRedisHitRejectedWhenPathIsDir 同上：分类路径存在但不是普通文件
+// （同名目录）时同样不能返回 Redis 成员。
+func TestTxtRepositoryRedisHitRejectedWhenPathIsDir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "pc", "anime.txt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	hc := &hitCache{url: "https://redis.example/1.jpg"}
+	repo := NewTxtRepository(root, hc)
+
+	img, err := repo.Random(context.Background(), "anime", model.DevicePC)
+	if img != nil {
+		t.Fatalf("分类不是普通文件时不应返回图片，实际 URL = %q", img.URL)
+	}
+	if err == nil {
+		t.Fatal("分类不是普通文件时应返回错误")
 	}
 }

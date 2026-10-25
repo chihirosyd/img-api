@@ -423,8 +423,9 @@ func (p *ExternalPool) fetchJSON(ctx context.Context, api ExternalAPIConfig, url
 // extractNested 从嵌套 map 中按点号路径提取字符串值。
 //
 // 示例：
-//   extractNested({"urls": {"raw": "https://..."}}, "urls.raw") → "https://..."
-//   extractNested(data, "") → 自动探测常见字段名
+//
+//	extractNested({"urls": {"raw": "https://..."}}, "urls.raw") → "https://..."
+//	extractNested(data, "") → 自动探测常见字段名
 func extractNested(data map[string]any, path string) string {
 	if path == "" {
 		// 尝试常见字段名
