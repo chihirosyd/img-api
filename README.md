@@ -6,7 +6,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 > Releases 中自动构建的二进制包与 Docker 镜像同样未经人工验证，
 > 正式投入使用前请务必先自行测试；如发现任何问题，欢迎提交 Issue。
 
-[![Go Version](https://img.shields.io/badge/Go-%3E%3D1.26-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-%3E%3D1.27-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker)](https://www.docker.com/)
 
@@ -35,7 +35,7 @@ Go 语言实现的高性能随机图片 API 服务，轻量、零数据库依赖
 
 ## 🚀 快速开始
 
-### 本地运行（Go 1.26+）
+### 本地运行（Go 1.27+）
 
 ```bash
 git clone https://github.com/chihirosyd/img-api.git && cd img-api
@@ -173,7 +173,7 @@ GET /health              → 完整状态与运行时统计
 
 ```bash
 # 注：vX.Y.Z 是版本占位符，请替换为实际版本号（如 v1.5.0）
-# 1. 发布前单独升级依赖并整理（本地需 Go 1.26+），单独提交，不混进发布提交
+# 1. 发布前单独升级依赖并整理（本地需 Go 1.27+），单独提交，不混进发布提交
 go get -u ./... && go mod tidy
 git add go.mod go.sum
 git diff --cached --quiet || git commit -m "chore: bump deps"

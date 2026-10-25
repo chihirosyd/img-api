@@ -34,7 +34,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.27.x" # 取 1.27 系列最新补丁版
+          check-latest: true # 关键：false 时会用 runner 本地缓存的旧补丁版（曾因此命中 stdlib 漏洞 GO-2026-6809）
           cache: true
 
       - name: Upgrade deps & tidy (generates go.sum)

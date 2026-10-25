@@ -17,6 +17,7 @@
 - `sync-redis` 退出码契约变更：**0 全成功 / 1 完全没有同步 / 2 部分成功**（旧版恒为 0）——依赖它判断结果的脚本会开始看到非零
 - `?category=` 含 Windows 非法字符（如 `*` `?` `|`）时由 500 改为 **400**（Linux 上原本是 404）：按 500 配置的告警或重试规则需要调整
 - 「手动 dispatch 构建镜像」的产出标签变了：`docker.yml` 改为推 `edge` + `sha-xxxx`，**不再推 `latest`**（`latest` 只由 release 工作流在最新 tag 时推进）；若脚本或 compose 依赖手动构建产出的 `latest`，需改指 `edge`
+- **源码构建要求 Go 1.27+**：`go.mod` 的 `go` 指令由 1.26.0 升到 1.27.0，镜像基础镜像同步改为 `golang:1.27-alpine`；用 Go 1.26 及更早版本从源码构建会直接报错（二进制与镜像用户不受影响）
 
 ### 修复
 
@@ -77,9 +78,10 @@
 - 启动日志新增 `root` 与 `log_dir` 字段：根目录探测错误（发布版最常见的坑）可一眼确认
 - `.dockerignore` 补充 `/img-api-gui.exe`、`/setversion*` 与本地构建缓存目录（避免大文件进入构建上下文）
 - 仓库首次统一到 `gofmt` 规范：73 个受跟踪 Go 文件全部合规，其中 14 个只有空白对齐与注释缩进调整，无行为变化
-- CI 静态检查升级并钉死 `staticcheck@v0.8.2`（原 `v0.7.0` 自身 `go` 指令为 1.25.0，而本模块要求 1.26.0，兼容余量为 0），并在跑分析前打印实际版本，同时保证 CI 可复现
+- CI 静态检查升级并钉死 `staticcheck@v0.8.2`（原 `v0.7.0` 自身 `go` 指令为 1.25.0，而本模块现要求 1.27.0，兼容余量为 0），并在跑分析前打印实际版本，同时保证 CI 可复现
 - `docker.yml` 的 `latest` 标签移出该工作流（改推 `edge` 与 `sha-xxxx`）：此前手动 dispatch 无条件覆盖 `latest`，与 release 工作流的「仅最新 tag 才推进」守卫矛盾，一次误操作就能让所有用 compose 默认值拉取的部署静默降级
 - 删除无生产调用方的死代码 `RandomService.CategoryExists`（相关断言改写为 `CategoryExistsFor` 覆盖）；删除 `mode` 分支里与 `redirect` 逐字相同的不可达 `default`
+- CI 的 `setup-go` 改为 `1.27.x` + `check-latest: true`：此前默认复用 runner 缓存的 1.26.9，其标准库 `crypto/x509` 存在 GO-2026-6809，`govulncheck` 以退出码 3 让 check 变红；现在工具链、静态检查与镜像基础镜像统一到 Go 1.27
 
 ## [1.5.0] - 2026-09-14
 

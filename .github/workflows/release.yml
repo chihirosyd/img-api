@@ -26,7 +26,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.27.x" # 取 1.27 系列最新补丁版
+          check-latest: true # 关键：false 时会用 runner 本地缓存的旧补丁版（曾因此命中 stdlib 漏洞 GO-2026-6809）
           cache: true # 依赖缓存：go.sum 不变时复用模块缓存，加速 CI
 
       - name: Ensure module files are tidy
@@ -56,8 +57,8 @@ jobs:
 
       - name: Run staticcheck
         # 与本地开发一致的深度静态检查。
-        # 钉死 v0.8.2 而非 @latest：比原 v0.7.0（go 指令 1.25.0）新，自身 go 指令为 1.26.0，
-        # 与本模块 go.mod 的 go 1.26.0 对齐；同时钉死保证 CI 结果可复现，不随上游发布漂移。
+        # 钉死 v0.8.2 而非 @latest：比原 v0.7.0（go 指令 1.25.0）新；CI 用 Go 1.27 编译它，
+        # 因此能读 Go 1.27 的导出数据（v0.8.1 起支持）。同时钉死保证 CI 结果可复现，不随上游发布漂移。
         # 升级 Go 大版本（go.mod 的 go 指令）时必须同步复核本工具版本，
         # 否则会重现"工具比 Go 旧"的硬失败（新版 Go 的导出数据它读不了）。
         run: |
@@ -87,7 +88,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.27.x" # 取 1.27 系列最新补丁版
+          check-latest: true # 关键：false 时会用 runner 本地缓存的旧补丁版（曾因此命中 stdlib 漏洞 GO-2026-6809）
           cache: true
 
       - name: Build GUI
@@ -127,7 +129,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.27.x" # 取 1.27 系列最新补丁版
+          check-latest: true # 关键：false 时会用 runner 本地缓存的旧补丁版（曾因此命中 stdlib 漏洞 GO-2026-6809）
           cache: true
 
       - name: Ensure module files are tidy
