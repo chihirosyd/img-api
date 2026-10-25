@@ -220,7 +220,8 @@ func TestSyncDeviceReportsPerCategoryFailure(t *testing.T) {
 	if st.urls != 1 || st.failures != 1 {
 		t.Fatalf("deviceSync = {urls:%d failures:%d}, want {1 1}", st.urls, st.failures)
 	}
-	code := runStats{urls: st.urls, failures: st.failures}.exitCode()
+	// deviceSync 与 runStats 字段完全一致，直接类型转换（staticcheck S1016）
+	code := runStats(st).exitCode()
 	if code != exitPartial {
 		t.Fatalf("exitCode = %d, want %d（部分成功）", code, exitPartial)
 	}
